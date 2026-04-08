@@ -40,7 +40,7 @@ After installation, natural phrases like “generate loi,” “update loi,” �
 1. Run **full generate** when first setting up or after large structural changes: discover all source trees, group into subdomains/rooms, generate entries per `FORMAT_REFERENCE.md`, write `docs/index/**` and verify every source file appears somewhere.
 2. Use **incremental generate** for day-to-day edits: detect stale rooms with git, regenerate only those rooms, then refresh the campus and building routers.
 
-The skill assumes **git** for staleness and history commands. For workflows that parallelize generation, it references the RLM skill pattern (`/rlm`); you can fall back to manual or per-subdomain agents if needed.
+The skill assumes **git** for staleness and history commands. For workflows that parallelize generation, it references the **Recursive Language Model (RLM)** pattern (`/rlm`). A concrete installable skill for that workflow is [BowTiedSwan/rlm-skill](https://github.com/Bowtiedswan/rlm-skill); you can fall back to manual or per-subdomain agents if needed.
 
 ## License
 
