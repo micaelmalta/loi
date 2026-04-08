@@ -40,20 +40,28 @@ Build a complete index from scratch. Use for first-time setup or major architect
 
 ### Process
 
-**1. Discover ALL source directories** — Full census before scoping anything:
-```bash
-find . -maxdepth 1 -type d | sort
-find . -type f \( -name "*.rb" -o -name "*.ts" -o -name "*.go" -o -name "*.py" \) \
-  ! -path "*/node_modules/*" ! -path "*/.git/*" ! -path "*/vendor/*" \
-  | sed 's|/[^/]*$||' | sort | uniq -c | sort -rn | head -40
-```
+**Invoke the RLM skill** (via `Skill tool` with `skill: "rlm"`) for all discovery and generation steps. Do NOT run bash file discovery commands directly — delegate to RLM.
+
+**1. Discover ALL source directories via RLM Index & Filter phase:**
+- Use RLM's Phase 1 (Native Mode) to census the repo:
+  - Glob `**/*.go`, `**/*.ts`, `**/*.tsx`, `**/*.py`, `**/*.js`, `**/*.rb` (adapt per project)
+  - Exclude: `vendor/`, `node_modules/`, `__pycache__/`, `.git/`, generated files
+- Use RLM's `fd`/`rg` tools (falling back to `find`/`grep`) to count files per directory and identify top-level subdomain boundaries
+
 **Every top-level directory with source files MUST be included.** Non-standard directories (`packages/`, `engines/`, `gems/`) often contain more code than `app/` or `src/`. Omitting them produces a partial index.
 
-**2. Filter source files** — Use Glob tool by language:
-- `**/*.go`, `**/*.ts`, `**/*.tsx`, `**/*.py`, `**/*.js`, `**/*.rb` (adapt per project)
-- Exclude: `vendor/`, `node_modules/`, `__pycache__/`, `.git/`, generated files
+**NO SAMPLING.** Do not pick "representative" directories. Every source directory discovered in step 1 must be assigned to a room. If the census finds N directories, all N must appear in the index.
 
-**3. Group into Subdomains and Domains** — Organize by **responsibility**, not language or directory. The hierarchy is:
+**2. Build a coverage checklist before writing any files** — After the census, produce a flat list of every source directory with its file count. This is your ground truth. Assign each directory to a room before proceeding. Do not write any index files until every directory has a room assignment.
+
+```
+[ ] <dir>/   <N> files  → (unassigned)
+[x] <dir>/   <N> files  → <subdomain>/<room>.md
+```
+
+**3. Filter source files** — via RLM's Glob tool by language (RLM handles exclusions automatically via `.gitignore`).
+
+**4. Group into Subdomains and Domains** — Organize by **responsibility**, not language or directory. The hierarchy is:
 
 ```
 docs/index/
@@ -96,19 +104,19 @@ Use these as starting points — rename to match the codebase's actual language:
 - **Business logic gets its own building.** If the codebase serves multiple business domains (catalog, orders, fulfillment), each gets a subdomain folder — not one giant `business.md`.
 - Merge tiny rooms (<3 files) into the nearest neighbor. Don't create a room for 1 file.
 
-**4. Generate via RLM** 
-— Invoke `/rlm` (via the Skill tool with `skill: "rlm"`) to parallelize:
+**5. Generate (still within the active RLM skill)** — Use RLM's Parallel Map phase to parallelize:
 - **Map prompt per domain:** "Read all files in [file list]. For each file, produce a LOI entry following `reference/FORMAT_REFERENCE.md`. 
 - **At the top of the output, generate a YAML metadata header including `room`, `see_also` (predict related rooms), and `hot_paths` (common edit sequences).** Return one markdown code block."
 - **Reduce prompt**: "Merge these domain LOI outputs into the subdomain structure and build `docs/index/_root.md` with a task→load mapping table AND a pattern→load table for cross-cutting behavioral patterns (retry, backoff, caching, transactions, etc.)."
+- **Agent count**: spawn one agent per room (not per building). Under-spawning causes sampling — when agents cover too many directories each, they will silently drop the smaller ones.
 - If `/rlm` is unavailable, fall back to spawning one background Agent per subdomain
 
-**5. Write index files:**
+**6. Write index files:**
 - `docs/index/_root.md` — Campus map (see format below)
 - `docs/index/<subdomain>/_root.md` — Building router per subdomain
 - `docs/index/<subdomain>/<room>.md` — Domain files with flat entry lists
 
-**6. Verify coverage** — Check that every source file from step 1 appears in at least one domain file. List any uncovered directories explicitly.
+**7. Verify coverage** — Cross-check the coverage checklist from step 2 against the written index files. Every directory on the checklist must appear in at least one room file. If any remain uncovered, generate those rooms before declaring the index complete.
 
 ### _root.md Format (Campus Map)
 
