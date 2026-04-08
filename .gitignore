@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+
+# uv
+uv.lock
+.python-version
+skills/loi/scripts/pyproject.toml
+skills/loi/scripts/README.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temp
+/tmp/
+*.log

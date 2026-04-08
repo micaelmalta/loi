@@ -1,0 +1,217 @@
+name: LOI Committee Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Cancel in-progress runs for the same PR
+concurrency:
+  group: loi-committee-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  # Override these in repository settings or workflow dispatch
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  LOI_FAIL_ON_CRITICAL: "true"
+
+jobs:
+  committee-review:
+    name: RLM Committee — ${{ matrix.persona }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        persona:
+          - architect
+          - security
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | head -200)
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$FILES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # Count source files (exclude docs, configs, etc.)
+          SOURCE_COUNT=$(echo "$FILES" | grep -cE '\.(go|ts|tsx|js|jsx|py|rb|rs|java|kt|swift)$' || echo "0")
+          echo "source_count=$SOURCE_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if no source changes
+        if: steps.changed.outputs.source_count == '0'
+        run: echo "No source files changed — skipping committee review."
+
+      - name: Load LOI index context
+        if: steps.changed.outputs.source_count != '0'
+        id: loi_context
+        run: |
+          if [ -f "docs/index/_root.md" ]; then
+            head -100 docs/index/_root.md > /tmp/loi_context.txt
+          else
+            echo "(no LOI index found)" > /tmp/loi_context.txt
+          fi
+
+      - name: Run ${{ matrix.persona }} review
+        if: steps.changed.outputs.source_count != '0'
+        id: review
+        uses: actions/github-script@v7
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        with:
+          script: |
+            const fs = require('fs');
+            const persona = '${{ matrix.persona }}';
+            const files = process.env.CHANGED_FILES || '';
+            const loiContext = fs.readFileSync('/tmp/loi_context.txt', 'utf8');
+
+            // Build persona-specific prompt
+            const prompts = {
+              architect: [
+                'You are the Architect persona of the LOI RLM Committee.',
+                '',
+                'Review the following changed files for architectural concerns:',
+                '- Mixed concerns (HTTP handling mixed with business logic, DB queries in handlers)',
+                '- Circular dependencies or tight coupling',
+                '- Missing abstractions or leaky abstractions',
+                '- Files that should be split or merged',
+                '',
+                'Rate architectural_health as: "healthy", "warning", or "critical".',
+                '',
+                'LOI Index Context:',
+                loiContext,
+                '',
+                'Changed files:',
+                files,
+                '',
+                'For each file with issues, output a JSON block:',
+                '```json',
+                '{"file": "<path>", "architectural_health": "<rating>", "committee_notes": "<explanation>"}',
+                '```',
+              ].join('\n'),
+
+              security: [
+                'You are the Security persona of the LOI RLM Committee.',
+                '',
+                'Review the following changed files for security concerns:',
+                '- Raw SQL without parameterization',
+                '- PII handling without encryption/masking',
+                '- Auth tokens or secrets in code',
+                '- Missing input validation at system boundaries',
+                '- Unsafe deserialization',
+                '',
+                'Rate security_tier as: "standard", "sensitive", or "high".',
+                '',
+                'LOI Index Context:',
+                loiContext,
+                '',
+                'Changed files:',
+                files,
+                '',
+                'For each file with issues, output a JSON block:',
+                '```json',
+                '{"file": "<path>", "security_tier": "<rating>", "committee_notes": "<explanation>"}',
+                '```',
+              ].join('\n'),
+            };
+
+            // Read each changed source file
+            let fileContents = '';
+            const fileList = files.split('\n').filter(f => f.trim());
+            for (const file of fileList.slice(0, 20)) {
+              try {
+                const content = fs.readFileSync(file, 'utf8');
+                fileContents += `\n--- ${file} ---\n${content.slice(0, 5000)}\n`;
+              } catch (e) {
+                // File might not exist (deleted)
+              }
+            }
+
+            // For now, output the prompt and file contents as the review artifact
+            // In production, this would call the Anthropic API
+            const output = {
+              persona,
+              prompt: prompts[persona],
+              files_reviewed: fileList.length,
+              file_contents_length: fileContents.length,
+              // Placeholder: replace with actual API call
+              review: `[${persona}] Reviewed ${fileList.length} files. Connect ANTHROPIC_API_KEY to enable AI review.`
+            };
+
+            core.setOutput('review_json', JSON.stringify(output));
+            core.setOutput('persona', persona);
+
+      - name: Post review comment
+        if: steps.changed.outputs.source_count != '0'
+        uses: actions/github-script@v7
+        env:
+          SOURCE_COUNT: ${{ steps.changed.outputs.source_count }}
+        with:
+          script: |
+            const persona = '${{ matrix.persona }}';
+            const icon = persona === 'architect' ? '\u{1F3D7}\u{FE0F}' : '\u{1F6E1}\u{FE0F}';
+            const sourceCount = process.env.SOURCE_COUNT || '0';
+
+            const body = [
+              `## ${icon} LOI Committee — ${persona.charAt(0).toUpperCase() + persona.slice(1)} Review`,
+              '',
+              `**Files reviewed:** ${sourceCount} source files`,
+              '',
+              '> Connect `ANTHROPIC_API_KEY` secret to enable AI-powered committee review.',
+              `> The ${persona} persona will analyze changed files and flag architectural/security concerns.`,
+              '',
+              '---',
+              '*Posted by [LOI Committee CI](.github/workflows/loi-committee.yml)*',
+            ].join('\n');
+
+            // Find existing comment by this persona to update instead of duplicating
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const marker = `LOI Committee — ${persona.charAt(0).toUpperCase() + persona.slice(1)} Review`;
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # Gate job: fails the check if any persona flags critical issues
+  committee-gate:
+    name: LOI Committee Gate
+    needs: committee-review
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check for critical flags
+        run: |
+          echo "LOI Committee review complete."
+          echo "To enable blocking on critical flags, connect ANTHROPIC_API_KEY"
+          echo "and update the committee-review job to parse AI responses."
+          # When AI review is connected, this step would:
+          # 1. Download review artifacts from the matrix jobs
+          # 2. Parse for architectural_health: critical or security_tier: high
+          # 3. Exit 1 if LOI_FAIL_ON_CRITICAL=true and critical flags found
