@@ -12,10 +12,27 @@ triggers:
   - "full loi"
   - "rebuild index"
   - "update loi"
+  - "refresh loi"
+  - "refresh index"
+  - "incremental update"
   - "navigate codebase using loi"
   - "full codebase index"
   - "implement loi changes"
   - "sync intent to code"
+---
+
+## Mode Dispatch
+
+| Trigger / Keyword | Mode |
+|-------------------|------|
+| `/loi` (no args), "navigate codebase" | **Navigate** (default) |
+| `/loi generate`, "full loi", "full codebase index", "rebuild index" | **Full-Generate** |
+| `/loi update`, "update loi", "refresh loi", "refresh index", "incremental update" | **Incremental-Generate** |
+| `/loi implement`, "implement loi changes", "sync intent to code" | **Implement** |
+| `/loi validate` | **Validate** |
+
+If ambiguous, default to **Navigate**. "Rebuild" without further context means **Full-Generate**.
+
 ---
 
 ## Navigate (Default Mode)
@@ -105,13 +122,19 @@ Use these as starting points — rename to match the codebase's actual language:
 - **Room file size limit: ~150 entries.** If a room would exceed this, split it into multiple rooms within the same building.
 - **Business logic gets its own building.** If the codebase serves multiple business domains (catalog, orders, fulfillment), each gets a subdomain folder — not one giant `business.md`.
 - Merge tiny rooms (<3 files) into the nearest neighbor. Don't create a room for 1 file.
+- **Shared utilities go in `shared/` or `infra/`, not in their primary consumer's room.** If `readlimit/` is used by mirrors, scanning, and API handlers, it belongs in `infra/` or `shared/` — not in `proxy/`. Place a file where its *responsibility* lives, not where its biggest caller lives.
 
 **5. Generate (via RLM Skill with Consensus Loop)** — Use RLM's parallel processing with a 3-step pipeline: Map -> Critique -> Reduce.
-- **Phase A (Map):** Spawn one worker agent per room. "Read all files in [file list]. Produce a LOI entry following `reference/FORMAT_REFERENCE.md`."
+- **Phase A (Map):** Spawn one worker agent per room. Prompt: "Read all files in [file list]. Produce a LOI entry for each file following `reference/FORMAT_REFERENCE.md`. Pay special attention to:
+  - **DEPENDS**: Trace `import`/`require` statements for cross-package internal imports (different `internal/` subdirectories or top-level packages). Omit standard library and same-package imports.
+  - **EMITS**: If the file publishes events, emits to channels, calls webhook delivery, or invokes callback functions that notify other subsystems, add EMITS.
+  - **PROPS/HOOKS**: For React/Vue components, extract component props into PROPS and custom hooks/composables into HOOKS.
+  - **PATTERNS**: Name every identifiable design pattern (retry, backoff, circuit breaker, middleware chain, etc.) with key parameters."
 - **Phase B (Critique / The Committee):** Pass the mapped drafts to specialized personas before finalizing:
   - *Architect Persona:* "Does this room mix concerns? (e.g., HTTP parsing next to database logic). If yes, set `architectural_health: warning` or `critical` and write a `committee_notes` explanation."
   - *Security Persona:* "Does this room handle raw SQL, PII, or auth tokens? If yes, set `security_tier: sensitive` or `high`."
-- **Phase C (Reduce):** "Merge the critiqued LOI outputs into the subdomain structure. At the top of each room file, generate the YAML metadata header including `see_also`, `hot_paths`, and the exact Governance Flags determined in Phase B. Build `docs/index/_root.md` with task/pattern mapping tables."
+  - *Completeness Persona:* "For each entry: (1) Are DEPENDS fields present for all cross-domain imports? (2) Are EMITS fields present for event/callback publishers? (3) For frontend components, are PROPS and HOOKS populated? (4) Are all behavioral PATTERNS named? Flag omissions."
+- **Phase C (Reduce):** "Merge the critiqued LOI outputs into the subdomain structure. At the top of each room file, generate the YAML metadata header including `see_also`, `hot_paths`, and the exact Governance Flags determined in Phase B. All rooms MUST have `architectural_health` and `security_tier` fields — including test and utility rooms (use `normal` when no issues are flagged). Build `docs/index/_root.md` with task/pattern mapping tables."
 - **Agent count**: spawn one worker agent per room, plus the Committee personas for the Critique phase. If `/rlm` is unavailable, fall back to spawning one background Agent per subdomain to simulate the Committee.
 
 **6. Write index files:**
@@ -196,7 +219,7 @@ Source paths: <paths covered by this subdomain>
 
 Regenerate only stale domains (files changed since last index).
 
-**When to use:** After code changes, user says "update loi" or "rebuild index" (not "full"), or during iterative development.
+**When to use:** After code changes, user says "update loi", "refresh loi", or "refresh index", or during iterative development.
 
 **Process:**
 
@@ -333,7 +356,7 @@ Key principles:
 ---
 
 ### Mandatory Metadata Header (Predictive Hooks)
-Every domain/room file MUST begin with a YAML frontmatter block. This enables predictive context loading (Level 5) for cross-domain navigation.
+Every domain/room file MUST begin with a YAML frontmatter block — **including test and utility rooms**. This enables predictive context loading (Level 5) for cross-domain navigation. Use `architectural_health: normal` and `security_tier: normal` when no issues are flagged; never omit the fields.
 
 ```yaml
 ---
