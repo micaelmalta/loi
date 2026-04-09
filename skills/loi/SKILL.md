@@ -1,7 +1,7 @@
 ---
 name: loi
 description: >
-  Codebase "Library of Intent" for LLM navigation. Replaces probabilistic global searching with a deterministic, plain-English navigation hierarchy. Uses Campus → Building → Room nested indices to scale indefinitely. Use as the default codebase navigation method when docs/index/_root.md exists. Use for generating or updating the full index when requested. Depends on /rlm skill for full-generate mode (falls back to manual agents if unavailable).
+  Codebase "Library of Intent" for LLM navigation. Replaces probabilistic global searching with a deterministic, plain-English navigation hierarchy. Uses Campus → Building → Room nested indices to scale indefinitely. Use as the default codebase navigation method when docs/index/_root.md exists. Use for generating or updating the full index when requested. Uses parallel Agent workers for generation.
 triggers:
   - /loi
   - /loi generate
@@ -380,10 +380,16 @@ Verify the structural integrity and coverage of a generated LOI index.
 
 **Process:**
 
-Run the validation script:
+Run the validation script using the skill's base directory (provided at the top of the skill invocation as `Base directory for this skill:`):
 
 ```bash
-python3 skills/loi/scripts/validate_loi.py <project-root>
+python3 <skill-base-dir>/scripts/validate_loi.py <project-root>
+```
+
+For example, if the base directory is `/Users/me/.claude/skills/loi` and validating the current project:
+
+```bash
+python3 /Users/me/.claude/skills/loi/scripts/validate_loi.py .
 ```
 
 The script checks:
