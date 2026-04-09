@@ -310,7 +310,12 @@ The PR requires human approval before merge. The AI never merges its own work.
 The `/loi implement` command is the IDE-native way (Option A). Two additional automation hooks are provided:
 
 - **Option B — Pre-Commit Hook**: `skills/loi/scripts/pre-commit-loi.sh` intercepts commits that modify `docs/index/` and triggers implementation before the commit completes.
-- **Option C — Background Daemon**: `skills/loi/scripts/watcher.py` runs a file watcher on `docs/index/` and triggers implementation on every save.
+- **Option C — Background Daemon**: `skills/loi/scripts/watcher.py` monitors `docs/index/` for changes with three modes:
+  - `--mode notify` (default): validate → create draft PR → Slack notification. No code changes until you approve.
+  - `--mode auto`: validate → implement via AI → commit → PR. Full autonomy, opt-in.
+  - `--mode dry-run`: log only.
+
+  Slack notifications use `--slack-webhook` (incoming webhook URL, preferred) or fall back to `--slack-channel` (sends via Slack MCP tool if available). Changes within the batch window (`--debounce`, default 5s) are grouped into a single PR.
 
 See the README for setup instructions.
 

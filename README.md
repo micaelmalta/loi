@@ -156,7 +156,20 @@ Three ways to trigger implementation automatically:
 |--------|-----------|-------|
 | **A — IDE Native** | `/loi implement` in Claude Code or Cursor | Built into SKILL.md — no extra setup |
 | **B — Pre-Commit Hook** | Triggers on `git commit` when `docs/index/` files are staged | `cp skills/loi/scripts/pre-commit-loi.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit` |
-| **C — Background Daemon** | File watcher triggers on every save | `uv run --with watchdog skills/loi/scripts/watcher.py` |
+| **C — Background Daemon** | Watches `docs/index/` for saves, batches changes | `uv run --with watchdog skills/loi/scripts/watcher.py --watch-path .` |
+
+The daemon defaults to **notify mode** — validates changes, creates a draft PR, and sends a Slack notification. You approve the PR, then run `/loi implement` to generate code.
+
+```bash
+# Notify mode with Slack webhook (preferred)
+uv run --with watchdog watcher.py --slack-webhook https://hooks.slack.com/services/...
+
+# Notify mode with Slack MCP fallback (uses claude to send via MCP)
+uv run --with watchdog watcher.py --slack-channel "#loi-approvals"
+
+# Full auto mode (validates, implements, PRs — no human gate)
+uv run --with watchdog watcher.py --mode auto
+```
 
 ### CI/CD — LOI Committee on Pull Requests
 
