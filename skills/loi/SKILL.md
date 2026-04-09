@@ -1,19 +1,21 @@
 ---
 name: loi
 description: >
-  Codebase "Library of Intent" for LLM navigation. Replaces probabilistic global searching with a deterministic, plain-English navigation hierarchy. Uses Recursive Language Model (RLM) logic to scale indefinitely by nesting indices (Campus → Building → Room). Eliminates file searching by providing a structured, machine-readable index of every file, symbol, and dependency chain.
+  Codebase "Library of Intent" for LLM navigation. Replaces probabilistic global searching with a deterministic, plain-English navigation hierarchy. Uses Campus → Building → Room nested indices to scale indefinitely. Use as the default codebase navigation method when docs/index/_root.md exists. Use for generating or updating the full index when requested. Depends on /rlm skill for full-generate mode (falls back to manual agents if unavailable).
 triggers:
   - /loi
   - /loi generate
   - /loi update
+  - /loi validate
+  - /loi implement
   - "generate loi"
   - "full loi"
   - "rebuild index"
   - "update loi"
-  - "where is"
-  - "find where"
-  - "navigate codebase"
+  - "navigate codebase using loi"
   - "full codebase index"
+  - "implement loi changes"
+  - "sync intent to code"
 ---
 
 ## Navigate (Default Mode)
@@ -104,12 +106,13 @@ Use these as starting points — rename to match the codebase's actual language:
 - **Business logic gets its own building.** If the codebase serves multiple business domains (catalog, orders, fulfillment), each gets a subdomain folder — not one giant `business.md`.
 - Merge tiny rooms (<3 files) into the nearest neighbor. Don't create a room for 1 file.
 
-**5. Generate (still within the active RLM skill)** — Use RLM's Parallel Map phase to parallelize:
-- **Map prompt per domain:** "Read all files in [file list]. For each file, produce a LOI entry following `reference/FORMAT_REFERENCE.md`. 
-- **At the top of the output, generate a YAML metadata header including `room`, `see_also` (predict related rooms), and `hot_paths` (common edit sequences).** Return one markdown code block."
-- **Reduce prompt**: "Merge these domain LOI outputs into the subdomain structure and build `docs/index/_root.md` with a task→load mapping table AND a pattern→load table for cross-cutting behavioral patterns (retry, backoff, caching, transactions, etc.)."
-- **Agent count**: spawn one agent per room (not per building). Under-spawning causes sampling — when agents cover too many directories each, they will silently drop the smaller ones.
-- If `/rlm` is unavailable, fall back to spawning one background Agent per subdomain
+**5. Generate (via RLM Skill with Consensus Loop)** — Use RLM's parallel processing with a 3-step pipeline: Map -> Critique -> Reduce.
+- **Phase A (Map):** Spawn one worker agent per room. "Read all files in [file list]. Produce a LOI entry following `reference/FORMAT_REFERENCE.md`."
+- **Phase B (Critique / The Committee):** Pass the mapped drafts to specialized personas before finalizing:
+  - *Architect Persona:* "Does this room mix concerns? (e.g., HTTP parsing next to database logic). If yes, set `architectural_health: warning` or `critical` and write a `committee_notes` explanation."
+  - *Security Persona:* "Does this room handle raw SQL, PII, or auth tokens? If yes, set `security_tier: sensitive` or `high`."
+- **Phase C (Reduce):** "Merge the critiqued LOI outputs into the subdomain structure. At the top of each room file, generate the YAML metadata header including `see_also`, `hot_paths`, and the exact Governance Flags determined in Phase B. Build `docs/index/_root.md` with task/pattern mapping tables."
+- **Agent count**: spawn one worker agent per room, plus the Committee personas for the Critique phase. If `/rlm` is unavailable, fall back to spawning one background Agent per subdomain to simulate the Committee.
 
 **6. Write index files:**
 - `docs/index/_root.md` — Campus map (see format below)
@@ -144,6 +147,15 @@ Cross-cutting behavioral patterns that span multiple rooms.
 | Circuit breaker / fault tolerance | ... |
 | Middleware chain | ... |
 | Event publishing / async messaging | ... |
+
+## 🚨 GOVERNANCE WATCHLIST
+
+Rooms flagged by the RLM Committee for architectural drift or security audits.
+
+| Room | Health | Security | Committee Note |
+|------|--------|----------|----------------|
+| `identity/legacy_auth.md` | `critical` | `high` | "Mixing JWT generation with direct DB queries. Needs extraction." |
+| `api/payments.md` | `warning` | `sensitive` | "Stripe keys accessed directly in handler instead of config struct." |
 
 ## Buildings
 
@@ -202,6 +214,108 @@ Regenerate only stale domains (files changed since last index).
 
 ---
 
+## Implement Mode (Level 7 — Bi-Directional Sync)
+
+Reverse the flow: edits to the markdown index drive changes in source code. The LOI becomes an executable contract.
+
+**When to use:** User edits a `DOES`, `SYMBOLS`, or other intent field in a `docs/index/` room file and wants the source code updated to match the new intent. Triggered by `/loi implement`, `"implement loi changes"`, or `"sync intent to code"`.
+
+### Process
+
+**1. Detect intent delta** — Diff the modified room file against its last committed version:
+
+```bash
+git diff HEAD -- docs/index/<subdomain>/<room>.md
+```
+
+Parse the diff to extract changed entries. For each changed entry, identify:
+- **File path**: The `# filename.ext` heading (deterministic — the LOI maps every entry to an exact source file)
+- **Old intent**: Previous `DOES`, `SYMBOLS`, `TYPE`, `INTERFACE`, `PATTERNS` values
+- **New intent**: Updated values from the markdown
+
+If no intent fields changed (e.g., only whitespace or `see_also`), skip that entry.
+
+**2. Validate the delta** — Before touching source code:
+- Confirm every referenced source file exists on disk. If a file was deleted or renamed, flag it and halt for that entry.
+- Check that the new intent is actionable (not empty, not identical to old).
+
+**3. Create an implementation branch:**
+
+```bash
+git checkout -b loi/implement-<room>-<timestamp>
+```
+
+Never work directly on the current branch. All changes happen on a dedicated branch.
+
+**4. Implement changes** — For each changed entry, construct a worker prompt:
+
+```
+The Architect has updated the Contract for <source-file>.
+
+Old Intent: <old DOES value>
+New Intent: <new DOES value>
+
+Old Symbols: <old SYMBOLS, if changed>
+New Symbols: <new SYMBOLS, if changed>
+
+Task: Read <source-file>. Refactor the code to fulfill the New Intent.
+- Preserve existing function signatures unless the New Intent explicitly demands changes.
+- Add new functions/types if the New Symbols field includes them.
+- Do not remove existing exports unless the New Intent removes their purpose.
+- Follow existing code style and patterns in the file.
+```
+
+For large rooms with many changed entries, use the RLM skill (`skill: "rlm"`) to parallelize — one worker agent per changed entry. If RLM is unavailable, process entries sequentially.
+
+**5. Run the test suite** — After all source changes are written:
+
+```bash
+# Detect project type and run appropriate tests
+# Go: go test ./...
+# Node: npm test
+# Python: pytest
+```
+
+If tests fail:
+- Read the failure output. Attempt a fix (max 2 retries).
+- If tests still fail after retries, **do not commit**. Report the failures and leave the branch for human review.
+
+**6. Update the LOI index** — Regenerate the room file for any source files that were modified (the code may have gained new symbols, types, etc. beyond what the user specified). This keeps the index in sync with reality.
+
+**7. Commit and push:**
+
+```bash
+git add <modified-source-files> docs/index/<affected-rooms>
+git commit -m "loi/implement: <summary of intent changes>"
+git push -u origin loi/implement-<room>-<timestamp>
+```
+
+**8. Open a Pull Request** — Create a PR with:
+- Title: `LOI Implement: <room> intent sync`
+- Body: Table of old → new intents, list of modified source files, test results
+- Label: `loi-implement`
+
+The PR requires human approval before merge. The AI never merges its own work.
+
+### Safety Rails
+
+- **Branch isolation**: All changes happen on a fresh branch. The working branch is never modified.
+- **Test gate**: Code is only committed if the test suite passes.
+- **No force-push**: Never use `--force`. If the branch exists, create a new one with an incremented timestamp.
+- **Human approval**: PRs are opened for review, never auto-merged.
+- **Atomic entries**: Each entry (source file) is implemented independently. A failure in one entry does not block others.
+
+### Automation Options
+
+The `/loi implement` command is the IDE-native way (Option A). Two additional automation hooks are provided:
+
+- **Option B — Pre-Commit Hook**: `skills/loi/scripts/pre-commit-loi.sh` intercepts commits that modify `docs/index/` and triggers implementation before the commit completes.
+- **Option C — Background Daemon**: `skills/loi/scripts/watcher.py` runs a file watcher on `docs/index/` and triggers implementation on every save.
+
+See the README for setup instructions.
+
+---
+
 ## Format Rules
 
 All LOI entry format details, field guide, examples, and anti-patterns are in `reference/FORMAT_REFERENCE.md`. Load it when generating or reviewing entries.
@@ -219,11 +333,40 @@ Every domain/room file MUST begin with a YAML frontmatter block. This enables pr
 ```yaml
 ---
 room: [Room Name]
-see_also: ["../<subdomain>/<related_room>.md"] # Conceptually linked rooms to pre-fetch
+see_also: ["../infra/database.md"]
 hot_paths: "If editing X -> remember to update Y"
+# --- LEVEL 6 GOVERNANCE FLAGS ---
+security_tier: "high" # Flagged by Security Agent
+architectural_health: "warning" # Flagged by Architect
+committee_notes: "This room is handling both HTTP parsing and business logic. Consider splitting in the next refactor."
 ---
 ```
 
+---
+
+## Validate Mode
+
+Verify the structural integrity and coverage of a generated LOI index.
+
+**When to use:** After generating or updating an index, or when `/loi validate` is triggered.
+
+**Process:**
+
+Run the validation script:
+
+```bash
+python3 skills/loi/scripts/validate_loi.py <project-root>
+```
+
+The script checks:
+- `docs/index/_root.md` exists and has TASK → LOAD table
+- All subdomain `_root.md` routers exist and reference valid room files
+- All room `.md` files have YAML frontmatter with required fields (`room`, `see_also`)
+- Every room file referenced in a router actually exists on disk
+- Every source directory with code files is covered by at least one room
+- No room exceeds ~150 entries
+
+Fix any reported errors before considering the index complete.
 
 ---
 
