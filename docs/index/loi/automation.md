@@ -17,7 +17,7 @@ DOES: Level 7 pre-commit hook (Option B) — intercepts git commits that stage d
 CONFIG: LOI_WORKER_CMD (default: claude), LOI_INDEX_PATH (default: docs/index), LOI_AUTO_STAGE (default: true), LOI_SKIP
 
 # validate_loi.py
-DOES: Validates LOI index structural integrity — checks campus _root.md exists and has TASK→LOAD table, building routers exist and reference valid room files, room files have YAML frontmatter with required fields (room, see_also), all markdown cross-references resolve to existing files, every source directory with code files is covered by at least one room, no room exceeds 150 entries; exits 0 on success, 1 on errors
+DOES: Validates LOI index structural integrity — checks campus _root.md exists and has TASK→LOAD table, building routers exist and reference valid room files, room files have YAML frontmatter with required fields (room, see_also), all markdown cross-references resolve to existing files, every source directory with code files is covered by at least one room, no room exceeds 150 entries; prints summary count of total rooms validated and total entries found across all rooms; exits 0 on success, 1 on errors
 SYMBOLS:
 - validate(project_root: Path) → ValidationResult
 - find_source_dirs(root: Path) → set[str]
@@ -38,9 +38,3 @@ SYMBOLS:
 - find_project_root() → Path
 CONFIG: --watch-path (default: docs/index), --debounce (default: 2.0s), --worker-cmd (default: claude), --dry-run
 PATTERNS: file-watcher, debounce
-
-# test_sentinel.py
-DOES: Test file to verify watcher triggers on intent field changes
-
-# test_sentinel.py
-DOES: Test file to verify watcher triggers on intent field changes
