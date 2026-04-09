@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Validate a LOI (Library of Intent) index for structural integrity and coverage.
+
+Usage:
+    python3 validate_loi.py <project-root>
+
+Checks:
+    1. Campus _root.md exists and has required sections
+    2. Building routers exist and reference valid rooms
+    3. Room files have YAML frontmatter with required fields
+    4. All cross-references resolve to existing files
+    5. Source directory coverage (every dir with code is in at least one room)
+    6. Room size limits (~150 entries max)
+"""
+
+import os
+import re
+import sys
+from pathlib import Path
+
+# Extensions considered "source code"
+SOURCE_EXTS = {
+    ".go", ".py", ".js", ".ts", ".tsx", ".jsx", ".rb", ".rs", ".java",
+    ".kt", ".swift", ".c", ".cpp", ".h", ".hpp", ".cs", ".php", ".ex",
+    ".exs", ".clj", ".scala", ".sh", ".bash", ".zsh",
+}
+
+# Directories always excluded from coverage checks
+EXCLUDED_DIRS = {
+    "vendor", "node_modules", "__pycache__", ".git", "dist", "build",
+    ".next", ".cache", "target", "bin", "obj", ".tox", ".mypy_cache",
+    ".pytest_cache", "coverage", ".turbo", ".vercel",
+}
+
+ENTRY_LIMIT = 150
+
+
+class ValidationResult:
+    def __init__(self):
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+        self.total_rooms: int = 0
+        self.total_entries: int = 0
+
+    def error(self, msg: str):
+        self.errors.append(msg)
+
+    def warn(self, msg: str):
+        self.warnings.append(msg)
+
+    @property
+    def ok(self) -> bool:
+        return len(self.errors) == 0
+
+    def report(self) -> str:
+        lines = []
+        if self.errors:
+            lines.append(f"\n  ERRORS ({len(self.errors)}):")
+            for e in self.errors:
+                lines.append(f"    - {e}")
+        if self.warnings:
+            lines.append(f"\n  WARNINGS ({len(self.warnings)}):")
+            for w in self.warnings:
+                lines.append(f"    - {w}")
+        if self.ok and not self.warnings:
+            lines.append("\n  All checks passed.")
+        return "\n".join(lines)
+
+
+def parse_frontmatter(filepath: Path) -> dict[str, str] | None:
+    """Extract YAML frontmatter as a simple key-value dict. Returns None if missing."""
+    try:
+        text = filepath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    if not text.startswith("---"):
+        return None
+
+    end = text.find("---", 3)
+    if end == -1:
+        return None
+
+    fm = {}
+    for line in text[3:end].strip().splitlines():
+        if ":" in line:
+            key, _, val = line.partition(":")
+            fm[key.strip()] = val.strip().strip('"').strip("'")
+    return fm
+
+
+def count_entries(filepath: Path) -> int:
+    """Count `# filename.ext` entry headings in a room file."""
+    try:
+        text = filepath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return 0
+    return len(re.findall(r"^# \S+\.\w+", text, re.MULTILINE))
+
+
+def extract_md_links(filepath: Path) -> list[str]:
+    """Extract markdown table cell references that look like .md file paths."""
+    try:
+        text = filepath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    # Match paths like `room.md`, `subdomain/room.md`, `subdomain/_root.md`
+    return re.findall(r"[\w./-]+\.md", text)
+
+
+def find_source_dirs(root: Path) -> set[str]:
+    """Walk the project and return relative dir paths that contain source files."""
+    dirs: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune excluded dirs in-place
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in EXCLUDED_DIRS and not d.startswith(".")
+        ]
+        rel = os.path.relpath(dirpath, root)
+        if rel == ".":
+            rel = ""
+        for f in filenames:
+            ext = os.path.splitext(f)[1]
+            if ext in SOURCE_EXTS:
+                dirs.add(rel)
+                break
+    return dirs
+
+
+def extract_source_paths_from_rooms(index_dir: Path) -> set[str]:
+    """Collect all 'Source paths:' values from room and router files."""
+    paths: set[str] = set()
+    pattern = re.compile(r"Source paths?:\s*(.+)", re.IGNORECASE)
+    for md in index_dir.rglob("*.md"):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for match in pattern.finditer(text):
+            for part in match.group(1).split(","):
+                cleaned = part.strip().rstrip("/")
+                if cleaned:
+                    paths.add(cleaned)
+    return paths
+
+
+def validate(project_root: Path) -> ValidationResult:
+    result = ValidationResult()
+    index_dir = project_root / "docs" / "index"
+
+    # --- 1. Campus _root.md ---
+    campus = index_dir / "_root.md"
+    if not campus.is_file():
+        result.error("Missing campus map: docs/index/_root.md")
+        return result  # Can't continue without campus
+
+    campus_text = campus.read_text(encoding="utf-8")
+    if "TASK" not in campus_text or "LOAD" not in campus_text:
+        result.error("Campus _root.md missing TASK → LOAD table")
+    if "Buildings" not in campus_text and "Subdomain" not in campus_text:
+        result.warn("Campus _root.md missing Buildings listing")
+
+    # --- 2. Discover subdomains and rooms ---
+    subdomains = [
+        d for d in index_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    ]
+
+    all_rooms: list[Path] = []
+
+    for sub in subdomains:
+        router = sub / "_root.md"
+        if not router.is_file():
+            result.error(f"Missing building router: {router.relative_to(project_root)}")
+            continue
+
+        # Check router has TASK → LOAD
+        router_text = router.read_text(encoding="utf-8")
+        if "TASK" not in router_text or "LOAD" not in router_text:
+            result.warn(
+                f"Building router {router.relative_to(project_root)} "
+                f"missing TASK → LOAD table"
+            )
+
+        # Find referenced room files
+        referenced = extract_md_links(router)
+        for ref in referenced:
+            # Normalize: could be just "room.md" or "subdomain/room.md"
+            if ref == "_root.md" or ref.endswith("/_root.md"):
+                continue
+            room_path = sub / ref if "/" not in ref else index_dir / ref
+            if room_path.is_file():
+                all_rooms.append(room_path)
+            else:
+                result.error(
+                    f"Router {router.relative_to(project_root)} references "
+                    f"non-existent room: {ref}"
+                )
+
+    # Also find room files not referenced by routers
+    for md in index_dir.rglob("*.md"):
+        if md.name == "_root.md":
+            continue
+        if md not in all_rooms:
+            all_rooms.append(md)
+            result.warn(
+                f"Room {md.relative_to(project_root)} exists but is not "
+                f"referenced by any building router"
+            )
+
+    # --- 3. Validate room files ---
+    for room in all_rooms:
+        fm = parse_frontmatter(room)
+        rel = room.relative_to(project_root)
+
+        if fm is None:
+            result.error(f"Room {rel} missing YAML frontmatter")
+        else:
+            if "room" not in fm:
+                result.warn(f"Room {rel} frontmatter missing 'room' field")
+            if "see_also" not in fm:
+                result.warn(f"Room {rel} frontmatter missing 'see_also' field")
+
+        # Entry count
+        entries = count_entries(room)
+        result.total_rooms += 1
+        result.total_entries += entries
+        if entries > ENTRY_LIMIT:
+            result.warn(
+                f"Room {rel} has {entries} entries (limit ~{ENTRY_LIMIT}). "
+                f"Consider splitting."
+            )
+
+    # --- 4. Source coverage ---
+    source_dirs = find_source_dirs(project_root)
+    # Remove docs/index itself from source dirs
+    source_dirs -= {"docs", "docs/index"}
+    source_dirs = {
+        d for d in source_dirs
+        if not d.startswith("docs/index")
+    }
+
+    if source_dirs:
+        covered = extract_source_paths_from_rooms(index_dir)
+        uncovered = []
+        for sd in sorted(source_dirs):
+            # Check if sd or any parent is covered
+            is_covered = any(
+                sd == c or sd.startswith(c + "/") or c.startswith(sd + "/")
+                for c in covered
+            )
+            if not is_covered:
+                uncovered.append(sd)
+
+        if uncovered:
+            result.warn(
+                f"{len(uncovered)} source directories not covered by any room: "
+                f"{', '.join(uncovered[:10])}"
+                + (f" (+{len(uncovered) - 10} more)" if len(uncovered) > 10 else "")
+            )
+
+    return result
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} <project-root>")
+        sys.exit(2)
+
+    project_root = Path(sys.argv[1]).resolve()
+    if not project_root.is_dir():
+        print(f"Error: {project_root} is not a directory")
+        sys.exit(2)
+
+    print(f"Validating LOI index at: {project_root / 'docs' / 'index'}")
+    result = validate(project_root)
+    print(result.report())
+    print(f"\n  Summary: {result.total_rooms} rooms validated, {result.total_entries} total entries")
+
+    sys.exit(0 if result.ok else 1)
+
+
+if __name__ == "__main__":
+    main()

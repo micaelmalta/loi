@@ -105,23 +105,50 @@ def get_intent_diff(filepath: str, project_root: Path) -> str | None:
 
 
 def extract_changed_entries(diff: str) -> list[dict]:
-    """Parse a git diff to find changed DOES/SYMBOLS fields and their file headings."""
+    """Parse a git diff to find changed intent fields in both heading and table formats.
+
+    Supports two LOI layouts:
+    - Heading format:  # filename.ext / DOES: ...
+    - Table format:    | filepath | DOES text | SYMBOLS | ... |
+    """
     entries = []
     current_file = None
+    intent_fields = ("DOES:", "SYMBOLS:", "TYPE:", "INTERFACE:", "PATTERNS:")
 
     for line in diff.splitlines():
-        heading_match = re.match(r"[+ ]# (\S+\.\w+)", line)
-        if heading_match:
-            current_file = heading_match.group(1)
+        if not line.startswith("+") or line.startswith("+++"):
+            # Track context lines for heading format
+            heading_match = re.match(r"[+ ]# (\S+\.\w+)", line)
+            if heading_match:
+                current_file = heading_match.group(1)
+            continue
 
-        if line.startswith("+") and not line.startswith("+++"):
-            for field in ("DOES:", "SYMBOLS:", "TYPE:", "INTERFACE:", "PATTERNS:"):
-                if field in line and current_file:
-                    entries.append({
-                        "source_file": current_file,
-                        "changed_line": line[1:].strip(),
-                    })
-                    break
+        added = line[1:]  # strip the leading '+'
+
+        # --- Heading format: DOES: ..., SYMBOLS: ... ---
+        for field in intent_fields:
+            if field in added and current_file:
+                entries.append({
+                    "source_file": current_file,
+                    "changed_line": added.strip(),
+                })
+                break
+        else:
+            # --- Table format: | filepath | DOES text | ... | ---
+            if added.strip().startswith("|") and "|" in added:
+                cells = [c.strip() for c in added.split("|")]
+                # Remove empty first/last from leading/trailing pipes
+                cells = [c for c in cells if c]
+                if len(cells) >= 2:
+                    # First cell is the file path, remaining cells are content
+                    filepath_cell = cells[0]
+                    content = " | ".join(cells[1:])
+                    # Check if it looks like a source file (has an extension)
+                    if re.match(r".*\.\w+$", filepath_cell) and filepath_cell != "FILE":
+                        entries.append({
+                            "source_file": filepath_cell,
+                            "changed_line": content[:120],
+                        })
 
     return entries
 
