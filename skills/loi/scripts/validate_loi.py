@@ -25,12 +25,34 @@ SOURCE_EXTS = {
     ".exs", ".clj", ".scala", ".sh", ".bash", ".zsh",
 }
 
-# Directories always excluded from coverage checks
-EXCLUDED_DIRS = {
-    "vendor", "node_modules", "__pycache__", ".git", "dist", "build",
-    ".next", ".cache", "target", "bin", "obj", ".tox", ".mypy_cache",
-    ".pytest_cache", "coverage", ".turbo", ".vercel",
-}
+# Tracked directories excluded from coverage (not in .gitignore but irrelevant to LOI)
+EXCLUDED_DIRS_HARDCODED = {"vendor", "node_modules"}
+
+
+def parse_gitignore_dirs(project_root: Path) -> set[str]:
+    """Extract directory names from .gitignore (lines ending with /)."""
+    gitignore = project_root / ".gitignore"
+    if not gitignore.is_file():
+        return set()
+    dirs: set[str] = set()
+    try:
+        for line in gitignore.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.endswith("/"):
+                # Strip leading / and trailing /, take the dir name
+                name = line.strip("/").split("/")[-1]
+                if name:
+                    dirs.add(name)
+    except OSError:
+        pass
+    return dirs
+
+
+def get_excluded_dirs(project_root: Path) -> set[str]:
+    """Combine .gitignore directory patterns with hardcoded exclusions."""
+    return EXCLUDED_DIRS_HARDCODED | parse_gitignore_dirs(project_root)
 
 ENTRY_LIMIT = 150
 
@@ -108,14 +130,14 @@ def extract_md_links(filepath: Path) -> list[str]:
     return re.findall(r"[\w./-]+\.md", text)
 
 
-def find_source_dirs(root: Path) -> set[str]:
+def find_source_dirs(root: Path, excluded_dirs: set[str]) -> set[str]:
     """Walk the project and return relative dir paths that contain source files."""
     dirs: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune excluded dirs in-place
         dirnames[:] = [
             d for d in dirnames
-            if d not in EXCLUDED_DIRS and not d.startswith(".")
+            if d not in excluded_dirs and not d.startswith(".")
         ]
         rel = os.path.relpath(dirpath, root)
         if rel == ".":
@@ -233,7 +255,8 @@ def validate(project_root: Path) -> ValidationResult:
             )
 
     # --- 4. Source coverage ---
-    source_dirs = find_source_dirs(project_root)
+    excluded_dirs = get_excluded_dirs(project_root)
+    source_dirs = find_source_dirs(project_root, excluded_dirs)
     # Remove docs/index itself from source dirs
     source_dirs -= {"docs", "docs/index"}
     source_dirs = {
@@ -245,10 +268,12 @@ def validate(project_root: Path) -> ValidationResult:
         covered = extract_source_paths_from_rooms(index_dir)
         uncovered = []
         for sd in sorted(source_dirs):
+            # Root dir is represented as "" by os.path.relpath but "." in Source paths
+            normalized_covered = covered | {"" if c == "." else c for c in covered}
             # Check if sd or any parent is covered
             is_covered = any(
                 sd == c or sd.startswith(c + "/") or c.startswith(sd + "/")
-                for c in covered
+                for c in normalized_covered
             )
             if not is_covered:
                 uncovered.append(sd)
