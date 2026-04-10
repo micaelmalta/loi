@@ -4,10 +4,10 @@ description: >
   Codebase "Library of Intent" for LLM navigation. Replaces probabilistic global searching with a deterministic, plain-English navigation hierarchy. Uses Campus → Building → Room nested indices to scale indefinitely. Use as the default codebase navigation method when docs/index/_root.md exists. Use for generating or updating the full index when requested. Uses parallel Agent workers for generation.
 triggers:
   - /loi
-  - /loi generate
-  - /loi update
-  - /loi validate
-  - /loi implement
+  - /loi-generate
+  - /loi-update
+  - /loi-validate
+  - /loi-implement
   - "generate loi"
   - "full loi"
   - "rebuild index"
@@ -26,10 +26,10 @@ triggers:
 | Trigger / Keyword | Mode |
 |-------------------|------|
 | `/loi` (no args), "navigate codebase" | **Navigate** (default) |
-| `/loi generate`, "full loi", "full codebase index", "rebuild index" | **Full-Generate** |
-| `/loi update`, "update loi", "refresh loi", "refresh index", "incremental update" | **Incremental-Generate** |
-| `/loi implement`, "implement loi changes", "sync intent to code" | **Implement** |
-| `/loi validate` | **Validate** |
+| `/loi-generate`, "full loi", "full codebase index", "rebuild index" | **Full-Generate** |
+| `/loi-update`, "update loi", "refresh loi", "refresh index", "incremental update" | **Incremental-Generate** |
+| `/loi-implement`, "implement loi changes", "sync intent to code" | **Implement** |
+| `/loi-validate` | **Validate** |
 
 If ambiguous, default to **Navigate**. "Rebuild" without further context means **Full-Generate**.
 
