@@ -11,6 +11,9 @@ on:
       - "skills/loi/scripts/**"
       - "skills/loi/tests/**"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   pytest:
     name: pytest (Python ${{ matrix.python-version }})
