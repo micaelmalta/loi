@@ -32,18 +32,21 @@ After installation, say `"generate loi"`, `"update loi"`, or `"navigate codebase
 
 ## Quick start
 
+In your AI agent (Claude Code, Cursor):
+
+```
+/loi generate      # build full index for a project
+/loi update        # refresh stale rooms after code changes
+```
+
+In your shell (`<skill-root>` = `~/.claude/skills/loi` for Claude Code):
+
 ```bash
-# Generate a full index for a project
-/loi generate
-
-# Update only stale rooms after code changes
-/loi update
-
 # Validate the index
-python3 ~/.claude/skills/loi/scripts/validate_loi.py .
+python3 <skill-root>/scripts/validate_loi.py .
 
 # Install the pre-push validation hook
-python3 ~/.claude/skills/loi/scripts/setup_hook.py .
+python3 <skill-root>/scripts/setup_hook.py .
 ```
 
 ---

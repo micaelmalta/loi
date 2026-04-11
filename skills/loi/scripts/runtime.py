@@ -121,7 +121,7 @@ class ClaimsStore:
     @contextmanager
     def _shared(self):
         """Hold a shared flock for read-only operations."""
-        with open(self._lock_path, "w") as lf:
+        with open(self._lock_path, "a") as lf:
             fcntl.flock(lf, fcntl.LOCK_SH)
             try:
                 yield

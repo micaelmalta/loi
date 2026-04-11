@@ -412,7 +412,7 @@ class LOIHandler(FileSystemEventHandler):
         if room_security in self.block_governance_security:
             return False, (
                 f"governance block: changed room has security={room_security}. "
-                f"Add to --allow-governance-security to override."
+                f"To override, remove '{room_security}' from --block-governance-security or set it to 'none'."
             )
 
         # Always block on critical health

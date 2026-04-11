@@ -23,7 +23,6 @@ class SlackBackend:
         self.webhook_url = webhook_url
 
     def send(self, event_type: str, payload: dict) -> None:
-        ts = datetime.now(timezone.utc).isoformat()
         repo = payload.get("repo", "unknown")
         path = payload.get("path", "")
         summary = payload.get("summary", "")
