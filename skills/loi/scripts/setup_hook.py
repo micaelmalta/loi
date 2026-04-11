@@ -23,8 +23,9 @@ SUPPORTED_HOOKS = {
 
 HOOK_EFFECTS = {
     "pre-push": (
-        "runs validate_loi.py --changed-rooms before every push.\n"
-        "           Push is blocked if any changed index room has broken references."
+        "runs validate_loi.py --changed-rooms, then governance.py before every push.\n"
+        "           Blocks on structural errors or critical/sensitive governance flags.\n"
+        "           Set LOI_GOVERNANCE_BLOCK=0 to downgrade governance blocks to warnings."
     ),
     "pre-commit-stale": (
         "warns when staged source files are covered by a LOI room\n"

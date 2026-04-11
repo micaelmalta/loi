@@ -20,7 +20,7 @@ DOES: Level 7 pre-commit hook (Option B) — intercepts git commits staging docs
 CONFIG: LOI_WORKER_CMD (default: claude), LOI_INDEX_PATH, LOI_AUTO_STAGE, LOI_SKIP
 
 # hooks/pre-push.sample
-DOES: Pre-push hook template — detects changed docs/index/ files in push range via git diff, runs validate_loi.py --changed-rooms, blocks push (exit 1) on errors; searches for validate script in project root, ~/.claude/skills/loi/, and relative paths; install via setup_hook.py
+DOES: Pre-push hook template — detects changed docs/index/ files in push range; runs validate_loi.py --changed-rooms (structural check) then governance.py (flags check); blocks on structural errors or critical/sensitive governance flags; LOI_GOVERNANCE_BLOCK=0 to downgrade governance to warning; git push --no-verify to skip entirely
 
 # validate_loi.py
 DOES: Validates LOI index structural integrity — checks campus _root.md, building routers, room frontmatter (room, see_also required), cross-references, file/glob references in TASK rows, source directory coverage, room size limits; --changed-rooms mode restricts to uncommitted index changes (git diff HEAD); --ci mode treats warnings as errors; exits 0/1
