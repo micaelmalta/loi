@@ -81,6 +81,32 @@ class TestParseGovernanceTable:
         assert rows[0]["health"] == "warning"
         assert rows[0]["security"] == "sensitive"
 
+    def test_emoji_prefix_in_heading(self):
+        """🚨 prefix in heading must not break table parsing."""
+        md = textwrap.dedent("""\
+            ## 🚨 GOVERNANCE WATCHLIST
+
+            | Room | Health | Security | Note |
+            |------|--------|----------|------|
+            | auth/jwt.md | normal | sensitive | note |
+        """)
+        rows = parse_governance_table(md)
+        assert len(rows) == 1
+        assert rows[0]["security"] == "sensitive"
+
+    def test_backtick_values_stripped(self):
+        """Backtick-wrapped health/security values must be stripped."""
+        md = textwrap.dedent("""\
+            ## GOVERNANCE WATCHLIST
+
+            | Room | Health | Security | Note |
+            |------|--------|----------|------|
+            | `auth/jwt.md` | `warning` | `high` | note |
+        """)
+        rows = parse_governance_table(md)
+        assert rows[0]["health"] == "warning"
+        assert rows[0]["security"] == "high"
+
 
 class TestParseFrontmatterFlags:
     def test_extracts_flags(self, tmp_path):

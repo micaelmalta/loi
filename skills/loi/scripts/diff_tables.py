@@ -30,7 +30,7 @@ from pathlib import Path
 TABLE_HEADERS = {
     "TASK": re.compile(r"^#+\s+TASK", re.IGNORECASE),
     "PATTERN": re.compile(r"^#+\s+PATTERN", re.IGNORECASE),
-    "GOVERNANCE": re.compile(r"^#+\s+GOVERNANCE", re.IGNORECASE),
+    "GOVERNANCE": re.compile(r"^#+.*\bGOVERNANCE\b", re.IGNORECASE),
 }
 
 

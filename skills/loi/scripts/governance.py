@@ -52,12 +52,12 @@ def parse_governance_table(text: str) -> list[dict]:
     header_seen = False
 
     for line in text.splitlines():
-        if re.match(r"^#+\s+GOVERNANCE", line, re.IGNORECASE):
+        if re.match(r"^#+.*\bGOVERNANCE\b", line, re.IGNORECASE):
             in_section = True
             header_seen = False
             continue
 
-        if in_section and re.match(r"^#+\s+", line) and not re.match(r"^#+\s+GOVERNANCE", line, re.IGNORECASE):
+        if in_section and re.match(r"^#+\s+", line) and not re.match(r"^#+.*\bGOVERNANCE\b", line, re.IGNORECASE):
             in_section = False
             continue
 
@@ -88,10 +88,10 @@ def parse_governance_table(text: str) -> list[dict]:
         security = cells[2] if len(cells) > 2 else "normal"
         note = cells[3] if len(cells) > 3 else ""
 
-        # Strip backtick formatting from room path
+        # Strip backtick formatting from all cells
         room = room.strip("`")
-        health = health.lower()
-        security = security.lower()
+        health = health.strip("`").lower()
+        security = security.strip("`").lower()
 
         if room:
             rows.append({
