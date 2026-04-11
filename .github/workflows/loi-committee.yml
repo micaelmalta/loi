@@ -127,7 +127,7 @@ jobs:
       - name: Run Gemini review
         if: steps.changed.outputs.source_count != '0' && env.LOI_AI_PROVIDER == 'gemini'
         id: gemini
-        uses: google-github-actions/run-gemini-cli@v1
+        uses: google-github-actions/run-gemini-cli@v0.1.21
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           gemini_model: ${{ vars.LOI_AI_MODEL || 'gemini-2.0-flash' }}
