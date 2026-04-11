@@ -8,7 +8,7 @@ Usage:
 
 Exit codes:
     0 — no stale coverage detected, or LOI_STALE_BLOCK is not set
-    1 — stale coverage found AND LOI_STALE_BLOCK=1
+    1 — stale coverage found (default); set LOI_STALE_BLOCK=0 to warn only
 
 Environment:
     LOI_STALE_BLOCK=0   Warn only, do not block the commit (default: block)

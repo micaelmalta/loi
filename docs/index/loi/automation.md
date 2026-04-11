@@ -114,7 +114,7 @@ PATTERNS: file-watcher, debounce, strategy-pattern, policy-tiers
 DEPENDS: backends/__init__.py, diff_tables.py, validate_loi.py, runtime.py
 
 # check_stale.py
-DOES: Pre-commit stale index detector — finds staged source files covered by LOI Source paths: fields that have no corresponding staged index file; warns by default, blocks if LOI_STALE_BLOCK=1; skippable via LOI_SKIP=1; resolves coverage via extract_source_paths() scanning all docs/index/ .md files
+DOES: Pre-commit stale index detector — finds staged source files covered by LOI Source paths: fields that have no corresponding staged index file; blocks by default (LOI_STALE_BLOCK=0 to warn only); git commit --no-verify to skip; resolves coverage via extract_source_paths() scanning all docs/index/ .md files
 SYMBOLS:
 - main() → int
 - find_covering_rooms(project_root: Path, source_file: str) → list[Path]

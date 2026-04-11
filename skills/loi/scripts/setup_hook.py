@@ -29,7 +29,8 @@ HOOK_EFFECTS = {
     "pre-commit-stale": (
         "warns when staged source files are covered by a LOI room\n"
         "           that was not also updated in this commit.\n"
-        "           Set LOI_STALE_BLOCK=1 to block the commit instead of warning."
+        "           Set LOI_STALE_BLOCK=0 to warn only instead of blocking.\n"
+        "           To skip one commit: git commit --no-verify"
     ),
 }
 
