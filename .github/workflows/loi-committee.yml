@@ -85,11 +85,18 @@ jobs:
             const files = (process.env.CHANGED_FILES || '').trim();
             const loiContext = fs.readFileSync('/tmp/loi_context.txt', 'utf8');
 
+            const path = require('path');
+            const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
+
             let fileContents = '';
             const fileList = files.split('\n').filter(f => f.trim());
             for (const file of fileList.slice(0, 20)) {
+              // Reject paths that are absolute or escape the workspace via ..
+              if (file.startsWith('/') || file.includes('..')) continue;
+              const fullPath = path.resolve(workspace, file);
+              if (!fullPath.startsWith(workspace + path.sep) && fullPath !== workspace) continue;
               try {
-                fileContents += `\n--- ${file} ---\n${fs.readFileSync(file, 'utf8').slice(0, 4000)}\n`;
+                fileContents += `\n--- ${file} ---\n${fs.readFileSync(fullPath, 'utf8').slice(0, 4000)}\n`;
               } catch (_) {}
             }
 

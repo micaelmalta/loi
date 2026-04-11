@@ -44,7 +44,7 @@ Rooms flagged by the RLM Committee for architectural drift or security audits.
 
 | Room | Health | Security | Committee Note |
 |------|--------|----------|----------------|
-| `loi/automation.md` | `warning` | `sensitive` | "watcher.py passes --worker-cmd to subprocess unsanitized (RCE). pre-commit-loi.sh passes raw git diff via shell var (injection). loi-committee.yml embeds CHANGED_FILES into github-script env (runner path traversal). Acceptable for homelab operator-controlled config." |
+| `loi/automation.md` | `warning` | `high` | "Fixed shell quoting, shutil.which() guard, and workspace path validation. Remaining: --worker-cmd is operator-controlled and intentionally unrestricted beyond existence check." |
 
 ## Buildings
 

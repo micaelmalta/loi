@@ -27,6 +27,7 @@ import argparse
 import fnmatch
 import json
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -756,6 +757,12 @@ def main():
     if args.mode != "dry-run":
         print(f"[LOI Watcher] Notify backend: {args.notify_backend}")
     if args.mode == "auto":
+        if not shutil.which(args.worker_cmd):
+            print(
+                f"[LOI Watcher] Error: --worker-cmd '{args.worker_cmd}' not found in PATH.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(f"[LOI Watcher] Worker command: {args.worker_cmd}")
         print(f"[LOI Watcher] Policy: {args.policy}")
         if block_governance_security:

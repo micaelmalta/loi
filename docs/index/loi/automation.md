@@ -4,7 +4,7 @@ see_also: ["skill.md"]
 hot_paths: "If adding a notify backend -> update backends/__init__.py load_backend() + tests. If changing _check_policy() -> update INTENT_CONFLICT_MATRIX in runtime.py. If changing validate_loi.py schema -> check --changed-rooms and --ci modes. If changing intent field names -> update extract_changed_entries() in watcher.py + pre-commit-loi.sh grep."
 security_tier: "sensitive"
 architectural_health: "warning"
-committee_notes: "pre-commit-loi.sh passes raw git diff via shell variable — injection risk if docs/index/ is attacker-controlled. watcher.py passes --worker-cmd to subprocess.run() unsanitized — RCE risk if operator config is untrusted. loi-committee.yml embeds CHANGED_FILES into github-script env — path traversal possible on runner. Acceptable for local homelab tooling."
+committee_notes: "Fixed: pre-commit-loi.sh variables fully quoted; watcher.py validates --worker-cmd via shutil.which() at startup; loi-committee.yml file paths validated against GITHUB_WORKSPACE before readFileSync. Remaining: --worker-cmd is operator-controlled and intentionally unrestricted beyond existence check."
 ---
 
 # .github/workflows/loi-committee.yml
