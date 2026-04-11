@@ -1,30 +1,37 @@
 #!/usr/bin/env -S python3 -u
 """LOI Level 7 — Background daemon that watches docs/index/ for markdown changes
-and triggers validation, draft PRs, Slack notifications, or AI implementation.
+and triggers validation, draft PRs, notifications, or AI implementation.
 
 Usage:
     uv run --with watchdog watcher.py [options]
-    uv run --with watchdog watcher.py --mode notify --slack-webhook https://hooks.slack.com/...
+    uv run --with watchdog watcher.py --mode notify --notify-backend webhook --notify-url http://peer-broker.local/loi/events
+    uv run --with watchdog watcher.py --mode notify --notify-backend slack --notify-url https://hooks.slack.com/...
     uv run --with watchdog watcher.py --mode auto --watch-path /path/to/project
     uv run --with watchdog watcher.py --mode dry-run
 
 Modes:
-    notify    (default) Validate → create draft PR → Slack notification. No code changes.
+    notify    (default) Validate → create draft PR → notification. No code changes.
     auto      Validate → implement via AI worker → commit → PR. Full autonomy.
     dry-run   Log what would happen without taking any action.
+
+Notify backends:
+    stdout   Print events to stdout (default)
+    file     Append JSON events to a file (--notify-file)
+    webhook  POST JSON to an HTTP endpoint (--notify-url)
+    slack    Post to Slack incoming webhook (--notify-url)
 
 Requires: uv (https://docs.astral.sh/uv/)
 """
 
 import argparse
+import fnmatch
 import json
 import re
 import subprocess
 import sys
 import threading
 import time
-import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -34,6 +41,10 @@ except ImportError:
     print("Error: watchdog not installed. Run with: uv run --with watchdog watcher.py", file=sys.stderr)
     sys.exit(1)
 
+# Make sibling scripts importable — set once at module load, not inside each call
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 # ---------------------------------------------------------------------------
 # Git / path helpers
@@ -50,13 +61,7 @@ def find_git_root(start: Path) -> Path:
 
 
 def resolve_watch_dir(watch_path: str) -> tuple[Path, Path]:
-    """Resolve watch_path to (project_root, watch_dir).
-
-    Accepts:
-      - A project root (has docs/index/ inside it)
-      - A direct docs/index path
-      - A relative path from cwd
-    """
+    """Resolve watch_path to (project_root, watch_dir)."""
     p = Path(watch_path).resolve()
 
     if (p / "docs" / "index").is_dir():
@@ -83,7 +88,6 @@ def get_repo_name(project_root: Path) -> str:
     )
     if result.returncode == 0:
         url = result.stdout.strip()
-        # Extract owner/repo from URL
         name = url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
         owner = url.rstrip("/").rsplit("/", 2)[-2].rsplit("/", 1)[-1].removesuffix(":")
         return f"{owner}/{name}"
@@ -105,27 +109,20 @@ def get_intent_diff(filepath: str, project_root: Path) -> str | None:
 
 
 def extract_changed_entries(diff: str) -> list[dict]:
-    """Parse a git diff to find changed intent fields in both heading and table formats.
-
-    Supports two LOI layouts:
-    - Heading format:  # filename.ext / DOES: ...
-    - Table format:    | filepath | DOES text | SYMBOLS | ... |
-    """
+    """Parse a git diff to find changed intent fields in heading and table formats."""
     entries = []
     current_file = None
     intent_fields = ("DOES:", "SYMBOLS:", "TYPE:", "INTERFACE:", "PATTERNS:")
 
     for line in diff.splitlines():
         if not line.startswith("+") or line.startswith("+++"):
-            # Track context lines for heading format
             heading_match = re.match(r"[+ ]# (\S+\.\w+)", line)
             if heading_match:
                 current_file = heading_match.group(1)
             continue
 
-        added = line[1:]  # strip the leading '+'
+        added = line[1:]
 
-        # --- Heading format: DOES: ..., SYMBOLS: ... ---
         for field in intent_fields:
             if field in added and current_file:
                 entries.append({
@@ -134,16 +131,12 @@ def extract_changed_entries(diff: str) -> list[dict]:
                 })
                 break
         else:
-            # --- Table format: | filepath | DOES text | ... | ---
             if added.strip().startswith("|") and "|" in added:
                 cells = [c.strip() for c in added.split("|")]
-                # Remove empty first/last from leading/trailing pipes
                 cells = [c for c in cells if c]
                 if len(cells) >= 2:
-                    # First cell is the file path, remaining cells are content
                     filepath_cell = cells[0]
                     content = " | ".join(cells[1:])
-                    # Check if it looks like a source file (has an extension)
                     if re.match(r".*\.\w+$", filepath_cell) and filepath_cell != "FILE":
                         entries.append({
                             "source_file": filepath_cell,
@@ -154,15 +147,50 @@ def extract_changed_entries(diff: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Table diff (Gap 8)
+# ---------------------------------------------------------------------------
+
+def compute_table_diff(project_root: Path, filepath: str) -> str | None:
+    """Compute a semantic diff over TASK / PATTERN / GOVERNANCE table rows.
+
+    Returns a human-readable summary string, or None if no table changes.
+    """
+    try:
+        from diff_tables import diff_file_against_head
+        return diff_file_against_head(project_root, filepath)
+    except Exception as exc:
+        print(f"[LOI Watcher] table-diff unavailable: {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Governance helper
+# ---------------------------------------------------------------------------
+
+def extract_governance_flags(project_root: Path, filepath: str) -> dict:
+    """Extract health/security governance flags from a room file."""
+    path = project_root / filepath if not Path(filepath).is_absolute() else Path(filepath)
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+        health_m = re.search(r"architectural_health\s*:\s*['\"]?(\w+)", text)
+        security_m = re.search(r"security_tier\s*:\s*['\"]?(\w+)", text)
+        return {
+            "health": health_m.group(1) if health_m else "normal",
+            "security": security_m.group(1) if security_m else "normal",
+        }
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_room(project_root: Path) -> tuple[bool, str]:
-    """Run LOI validation on the project. Returns (passed, message)."""
+def validate_project(project_root: Path) -> tuple[bool, str]:
+    """Run LOI validation. Returns (passed, message)."""
     try:
-        # Import validate_loi from the same scripts directory
-        scripts_dir = Path(__file__).resolve().parent
-        sys.path.insert(0, str(scripts_dir))
         from validate_loi import validate
 
         result = validate(project_root)
@@ -191,8 +219,7 @@ def create_draft_pr(
 
     Returns the PR URL or None on failure.
     """
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    # Derive room name from the first changed file
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     room_names = []
     for f in changed_files:
         name = Path(f).stem
@@ -204,10 +231,8 @@ def create_draft_pr(
     def run(cmd: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
 
-    # Save current branch to return to it
     current = run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
 
-    # Create branch and commit
     r = run(["git", "checkout", "-b", branch])
     if r.returncode != 0:
         print(f"[LOI Watcher] Failed to create branch: {r.stderr.strip()}")
@@ -228,7 +253,6 @@ def create_draft_pr(
         run(["git", "branch", "-D", branch])
         return None
 
-    # Build PR body
     source_files = sorted(set(e["source_file"] for e in all_entries))
     body_lines = [
         "## Intent Delta",
@@ -267,168 +291,9 @@ def create_draft_pr(
     else:
         print(f"[LOI Watcher] Failed to create PR: {r.stderr.strip()}")
 
-    # Return to original branch
     run(["git", "checkout", current])
 
     return pr_url
-
-
-# ---------------------------------------------------------------------------
-# Slack notification
-# ---------------------------------------------------------------------------
-
-def _build_slack_message(
-    repo_name: str,
-    room_names: list[str],
-    pr_url: str | None,
-    entries: list[dict],
-) -> str:
-    """Build the Slack notification message as markdown."""
-    rooms = ", ".join(room_names)
-    source_files = sorted(set(e["source_file"] for e in entries))
-
-    lines = [
-        f"*LOI Intent Change — {rooms}*",
-        "",
-        f"*Repo:* {repo_name}  |  *Files affected:* {len(source_files)}",
-        "",
-    ]
-    for e in entries[:10]:
-        lines.append(f"• `{e['source_file']}` — {e['changed_line'][:60]}")
-
-    if pr_url:
-        lines += ["", f"<{pr_url}|Review PR>"]
-
-    return "\n".join(lines)
-
-
-def notify_slack_webhook(
-    webhook_url: str,
-    repo_name: str,
-    room_names: list[str],
-    pr_url: str | None,
-    entries: list[dict],
-) -> bool:
-    """Post notification via Slack incoming webhook. Returns True on success."""
-    rooms = ", ".join(room_names)
-    source_files = sorted(set(e["source_file"] for e in entries))
-
-    text = f"LOI intent change in *{repo_name}* — {rooms}"
-
-    blocks = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": f"LOI Intent Change — {rooms}"},
-        },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Repo:*\n{repo_name}"},
-                {"type": "mrkdwn", "text": f"*Files affected:*\n{len(source_files)}"},
-            ],
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "\n".join(
-                    f"• `{e['source_file']}` — {e['changed_line'][:60]}"
-                    for e in entries[:10]
-                ),
-            },
-        },
-    ]
-
-    if pr_url:
-        blocks.append({
-            "type": "actions",
-            "elements": [{
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Review PR"},
-                "url": pr_url,
-                "style": "primary",
-            }],
-        })
-
-    payload = json.dumps({"text": text, "blocks": blocks}).encode("utf-8")
-
-    try:
-        req = urllib.request.Request(
-            webhook_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            ok = resp.status == 200
-            if ok:
-                print("[LOI Watcher] Slack notification sent (webhook).")
-            else:
-                print(f"[LOI Watcher] Slack webhook returned status {resp.status}")
-            return ok
-    except Exception as e:
-        print(f"[LOI Watcher] Slack webhook failed: {e}")
-        return False
-
-
-def notify_slack_mcp(
-    slack_channel: str,
-    repo_name: str,
-    room_names: list[str],
-    pr_url: str | None,
-    entries: list[dict],
-    worker_cmd: str = "claude",
-    project_root: Path | None = None,
-) -> bool:
-    """Fallback: send Slack notification via claude MCP tool. Returns True on success."""
-    message = _build_slack_message(repo_name, room_names, pr_url, entries)
-
-    prompt = (
-        f"Send the following message to the Slack channel '{slack_channel}' "
-        f"using the slack_send_message MCP tool. Do not modify the message content.\n\n"
-        f"Message:\n{message}"
-    )
-
-    try:
-        result = subprocess.run(
-            [worker_cmd, "-p", prompt, "--allowedTools", "mcp__plugin_slack_slack__slack_send_message"],
-            capture_output=True, text=True, timeout=30,
-            cwd=project_root or Path.cwd(),
-        )
-        ok = result.returncode == 0
-        if ok:
-            print("[LOI Watcher] Slack notification sent (MCP).")
-        else:
-            print(f"[LOI Watcher] Slack MCP failed: {result.stderr.strip()[:200]}")
-        return ok
-    except Exception as e:
-        print(f"[LOI Watcher] Slack MCP failed: {e}")
-        return False
-
-
-def notify_slack(
-    webhook_url: str | None,
-    slack_channel: str | None,
-    repo_name: str,
-    room_names: list[str],
-    pr_url: str | None,
-    entries: list[dict],
-    worker_cmd: str = "claude",
-    project_root: Path | None = None,
-) -> bool:
-    """Send Slack notification. Uses webhook if available, falls back to MCP."""
-    if webhook_url:
-        return notify_slack_webhook(webhook_url, repo_name, room_names, pr_url, entries)
-
-    if slack_channel:
-        print("[LOI Watcher] No webhook URL — falling back to Slack MCP tool.")
-        return notify_slack_mcp(
-            slack_channel, repo_name, room_names, pr_url, entries,
-            worker_cmd=worker_cmd, project_root=project_root,
-        )
-
-    print("[LOI Watcher] No --slack-webhook or --slack-channel configured. Skipping notification.")
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +322,19 @@ def build_worker_prompt(filepaths: list[str], diffs: dict[str, str], entries: li
 # Event handler with batch support
 # ---------------------------------------------------------------------------
 
+POLICY_TIERS = [
+    "notify-only",      # validate + notify; never invoke the implement worker
+    "draft-only",       # validate + branch + draft PR; worker not invoked
+    "docs-safe",        # implement only if all source files are under docs/
+    "tests-safe",       # implement only if all source files are test files
+    "scoped-code-safe", # implement only if all source files match --allowed-scopes
+    "full-auto",        # implement unconditionally (opt-in)
+]
+
+HEALTH_SEVERITY = {"normal": 0, "warning": 1, "critical": 2}
+SECURITY_SEVERITY = {"normal": 0, "high": 1, "sensitive": 2}
+
+
 class LOIHandler(FileSystemEventHandler):
     def __init__(
         self,
@@ -464,18 +342,146 @@ class LOIHandler(FileSystemEventHandler):
         mode: str,
         debounce: float,
         worker_cmd: str,
-        slack_webhook: str | None,
-        slack_channel: str | None,
+        notify_backend,
+        policy: str = "full-auto",
+        allowed_scopes: list[str] | None = None,
+        block_governance_security: set[str] | None = None,
     ):
         self.project_root = project_root
         self.mode = mode
         self.debounce = debounce
         self.worker_cmd = worker_cmd
-        self.slack_webhook = slack_webhook
-        self.slack_channel = slack_channel
+        self.notify_backend = notify_backend
+        self.policy = policy
+        self.allowed_scopes = allowed_scopes or []
+        self.block_governance_security = block_governance_security or {"sensitive"}
         self._pending_files: set[str] = set()
-        self._batch_timer: threading.Timer | None = None
+        self._batch_timer = None
         self._lock = threading.Lock()
+
+    # -----------------------------------------------------------------------
+    # Governance helper
+    # -----------------------------------------------------------------------
+
+    def _extract_batch_governance(self, changed_room_files: list[str]) -> dict:
+        """Return the worst health/security flags across all changed rooms."""
+        all_gov: list[dict] = []
+        for filepath in changed_room_files:
+            rel = str(Path(filepath).relative_to(self.project_root))
+            flags = extract_governance_flags(self.project_root, rel)
+            if flags:
+                all_gov.append(flags)
+        if not all_gov:
+            return {}
+        severity_h = {"normal": 0, "warning": 1, "critical": 2}
+        severity_s = {"normal": 0, "high": 1, "sensitive": 2}
+        return {
+            "health": max(
+                (g.get("health", "normal") for g in all_gov),
+                key=lambda h: severity_h.get(h, 0),
+            ),
+            "security": max(
+                (g.get("security", "normal") for g in all_gov),
+                key=lambda s: severity_s.get(s, 0),
+            ),
+        }
+
+    # -----------------------------------------------------------------------
+    # Policy gate (Gap 4)
+    # -----------------------------------------------------------------------
+
+    def _check_policy(
+        self,
+        entries: list[dict],
+        governance: dict,
+        changed_room_files: list[str],
+    ) -> tuple[bool, str]:
+        """Return (allowed, reason) for the current implement policy.
+
+        Called only in auto mode. Handles governance-aware blocking,
+        scope filtering, and optional room-claim conflict checks.
+        """
+        policy = self.policy
+
+        # notify-only: never implement
+        if policy == "notify-only":
+            return False, "policy=notify-only — auto-implement disabled"
+
+        # Governance blocking — configurable set of security tiers to refuse
+        room_security = governance.get("security", "normal")
+        if room_security in self.block_governance_security:
+            return False, (
+                f"governance block: changed room has security={room_security}. "
+                f"Add to --allow-governance-security to override."
+            )
+
+        # Always block on critical health
+        room_health = governance.get("health", "normal")
+        if HEALTH_SEVERITY.get(room_health, 0) >= HEALTH_SEVERITY["critical"]:
+            return False, (
+                f"governance block: changed room has health={room_health}. "
+                f"Resolve the architectural issue before auto-implementing."
+            )
+
+        # draft-only: PR created, worker not invoked
+        if policy == "draft-only":
+            return False, "policy=draft-only — branch/PR created, worker not invoked"
+
+        # Scope checks
+        source_files = [e["source_file"] for e in entries]
+
+        if policy == "docs-safe":
+            blocked = [
+                f for f in source_files
+                if not (f.startswith("docs/") or fnmatch.fnmatch(f, "docs/**"))
+            ]
+            if blocked:
+                return False, f"docs-safe: source files outside docs/: {', '.join(blocked)}"
+
+        elif policy == "tests-safe":
+            def _is_test(f: str) -> bool:
+                return (
+                    f.startswith("tests/") or
+                    fnmatch.fnmatch(f, "tests/**") or
+                    "_test." in f or
+                    f.endswith(".test.ts") or
+                    f.endswith(".spec.ts") or
+                    f.endswith("_spec.rb")
+                )
+            blocked = [f for f in source_files if not _is_test(f)]
+            if blocked:
+                return False, f"tests-safe: source files outside tests/: {', '.join(blocked)}"
+
+        elif policy == "scoped-code-safe":
+            if not self.allowed_scopes:
+                return False, "scoped-code-safe requires --allowed-scopes"
+            blocked = [
+                f for f in source_files
+                if not any(fnmatch.fnmatch(f, scope) for scope in self.allowed_scopes)
+            ]
+            if blocked:
+                return False, (
+                    f"scoped-code-safe: files outside allowed scopes "
+                    f"({', '.join(self.allowed_scopes)}): {', '.join(blocked)}"
+                )
+
+        # Advisory room-claim check (non-fatal warning unless edit conflict)
+        try:
+            from runtime import ClaimsStore, check_conflict
+
+            store = ClaimsStore(self.project_root)
+            for filepath in changed_room_files:
+                rel = str(Path(filepath).relative_to(self.project_root))
+                existing = store.get_claims_for(rel)
+                action, msg = check_conflict(existing, "edit")
+                if action == "conflict":
+                    return False, f"room claim conflict: {msg}"
+                if action in ("allow_with_warning", "governance_sensitive"):
+                    print(f"[LOI Watcher] Claim notice: {msg}")
+        except Exception:
+            pass  # runtime coordination is optional
+
+        return True, "allowed"
 
     def on_modified(self, event):
         if not isinstance(event, FileModifiedEvent):
@@ -485,11 +491,8 @@ class LOIHandler(FileSystemEventHandler):
 
         with self._lock:
             self._pending_files.add(event.src_path)
-
-            # Reset the batch timer — wait for more changes
             if self._batch_timer:
                 self._batch_timer.cancel()
-
             self._batch_timer = threading.Timer(self.debounce, self._process_batch)
             self._batch_timer.start()
 
@@ -507,7 +510,6 @@ class LOIHandler(FileSystemEventHandler):
         for f in files:
             print(f"  - {f}")
 
-        # Collect diffs and entries across all changed files
         all_entries: list[dict] = []
         diffs: dict[str, str] = {}
         changed_room_files: list[str] = []
@@ -535,42 +537,80 @@ class LOIHandler(FileSystemEventHandler):
         for e in all_entries:
             print(f"  - {e['source_file']}: {e['changed_line'][:80]}")
 
-        # --- dry-run: stop here ---
         if self.mode == "dry-run":
             print("[LOI Watcher] DRY RUN — no action taken.")
             return
 
-        # --- validate (notify + auto modes) ---
-        passed, msg = validate_room(self.project_root)
+        passed, msg = validate_project(self.project_root)
         print(f"[LOI Watcher] {msg}")
         if not passed:
             print("[LOI Watcher] Skipping — fix validation errors first.")
             return
 
-        # --- notify mode: draft PR + Slack ---
+        repo_name = get_repo_name(self.project_root)
+        room_names = [Path(f).stem for f in changed_room_files]
+
         if self.mode == "notify":
             pr_url = create_draft_pr(self.project_root, changed_room_files, all_entries)
 
-            room_names = [Path(f).stem for f in changed_room_files]
-            repo_name = get_repo_name(self.project_root)
+            # Build structured table diff
+            table_diff_parts = []
+            for filepath in changed_room_files:
+                rel = str(Path(filepath).relative_to(self.project_root))
+                td = compute_table_diff(self.project_root, rel)
+                if td:
+                    table_diff_parts.append(td)
+            table_diff = "\n\n".join(table_diff_parts) or None
 
-            notify_slack(
-                webhook_url=self.slack_webhook,
-                slack_channel=self.slack_channel,
-                repo_name=repo_name,
-                room_names=room_names,
-                pr_url=pr_url,
-                entries=all_entries,
-                worker_cmd=self.worker_cmd,
-                project_root=self.project_root,
-            )
+            governance = self._extract_batch_governance(changed_room_files)
+
+            payload = {
+                "repo": repo_name,
+                "path": ", ".join(str(Path(f).relative_to(self.project_root)) for f in changed_room_files),
+                "summary": f"Intent change in {', '.join(room_names)}",
+                "pr_url": pr_url,
+                "table_diff": table_diff,
+                "governance": governance,
+                "entries": [e for e in all_entries[:20]],
+            }
+
+            if self.notify_backend is not None:
+                try:
+                    self.notify_backend.send("room.changed", payload)
+                except Exception as exc:
+                    # Single error boundary — backends propagate, watcher absorbs
+                    print(f"[LOI Watcher] Notification failed ({type(exc).__name__}): {exc}")
 
             return
 
-        # --- auto mode: implement via AI worker ---
         if self.mode == "auto":
+            auto_governance = self._extract_batch_governance(changed_room_files)
+            allowed, reason = self._check_policy(all_entries, auto_governance, changed_room_files)
+
+            if not allowed:
+                print(f"[LOI Watcher] Auto-implement blocked: {reason}")
+                # For draft-only, still create a branch/PR and notify
+                if self.policy == "draft-only":
+                    pr_url = create_draft_pr(self.project_root, changed_room_files, all_entries)
+                    payload = {
+                        "repo": get_repo_name(self.project_root),
+                        "path": ", ".join(
+                            str(Path(f).relative_to(self.project_root)) for f in changed_room_files
+                        ),
+                        "summary": f"Draft PR (policy=draft-only): {', '.join(Path(f).stem for f in changed_room_files)}",
+                        "pr_url": pr_url,
+                        "governance": auto_governance,
+                        "entries": all_entries[:20],
+                    }
+                    if self.notify_backend is not None:
+                        try:
+                            self.notify_backend.send("room.changed", payload)
+                        except Exception as exc:
+                            print(f"[LOI Watcher] Notification failed ({type(exc).__name__}): {exc}")
+                return
+
             prompt = build_worker_prompt(changed_room_files, diffs, all_entries)
-            print(f"[LOI Watcher] Triggering worker: {self.worker_cmd}")
+            print(f"[LOI Watcher] Policy={self.policy} — triggering worker: {self.worker_cmd}")
             subprocess.run(
                 [
                     self.worker_cmd, "-p", prompt,
@@ -594,7 +634,7 @@ def main():
     )
     parser.add_argument(
         "--mode", choices=["notify", "auto", "dry-run"], default="notify",
-        help="notify (default): validate + draft PR + Slack. auto: validate + implement. dry-run: log only.",
+        help="notify (default): validate + draft PR + notification. auto: validate + implement. dry-run: log only.",
     )
     parser.add_argument(
         "--debounce", type=float, default=5.0,
@@ -604,24 +644,72 @@ def main():
         "--worker-cmd", default="claude",
         help="Command to invoke the AI worker in auto mode (default: claude)",
     )
-    parser.add_argument(
-        "--slack-webhook",
-        help="Slack incoming webhook URL for notifications (preferred)",
+
+    # Notifier backend options
+    notify_group = parser.add_argument_group("Notification")
+    notify_group.add_argument(
+        "--notify-backend", default="stdout",
+        choices=["stdout", "file", "webhook", "slack"],
+        help="Notification backend (default: stdout)",
     )
-    parser.add_argument(
-        "--slack-channel",
-        help="Slack channel name or ID for MCP fallback (e.g., #loi-approvals, C01234ABCDE)",
+    notify_group.add_argument(
+        "--notify-url",
+        help="Webhook or Slack incoming webhook URL",
     )
-    # Keep --dry-run as a convenience alias
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Shorthand for --mode dry-run",
+    notify_group.add_argument(
+        "--notify-file", default="loi-events.jsonl",
+        help="File path for file backend (default: loi-events.jsonl)",
     )
+    notify_group.add_argument(
+        "--notify-token-env",
+        help="Env var name holding bearer token for webhook backend",
+    )
+
+    # Legacy Slack flags (kept for backward compatibility)
+    legacy = parser.add_argument_group("Legacy Slack (deprecated, use --notify-backend slack)")
+    legacy.add_argument("--slack-webhook", help="Slack incoming webhook URL (use --notify-url instead)")
+    legacy.add_argument("--slack-channel", help="Slack channel (deprecated)")
+
+    # Policy tiers (Gap 4)
+    policy_group = parser.add_argument_group("Implementation Policy (auto mode)")
+    policy_group.add_argument(
+        "--policy",
+        choices=POLICY_TIERS,
+        default="full-auto",
+        help=(
+            "Controls what auto mode is allowed to implement. "
+            "notify-only: never implement; "
+            "draft-only: branch+PR but no worker; "
+            "docs-safe: only docs/ source files; "
+            "tests-safe: only test files; "
+            "scoped-code-safe: only files matching --allowed-scopes; "
+            "full-auto: no restriction (default)"
+        ),
+    )
+    policy_group.add_argument(
+        "--allowed-scopes",
+        help="Comma-separated glob patterns for scoped-code-safe policy (e.g. 'docs/**,tests/**')",
+    )
+    policy_group.add_argument(
+        "--block-governance-security",
+        default="sensitive",
+        help=(
+            "Comma-separated security tiers that block auto-implement "
+            "(default: sensitive). Use 'none' to disable governance blocking."
+        ),
+    )
+
+    parser.add_argument("--dry-run", action="store_true", help="Shorthand for --mode dry-run")
     args = parser.parse_args()
 
-    # --dry-run flag overrides --mode
     if args.dry_run:
         args.mode = "dry-run"
+
+    # Handle legacy Slack args
+    if args.slack_webhook and not args.notify_url:
+        args.notify_backend = "slack"
+        args.notify_url = args.slack_webhook
+        print("[LOI Watcher] Note: --slack-webhook is deprecated; use --notify-backend slack --notify-url <url>")
 
     project_root, watch_dir = resolve_watch_dir(args.watch_path)
 
@@ -629,19 +717,51 @@ def main():
         print(f"Error: {watch_dir} does not exist. Generate an LOI index first.", file=sys.stderr)
         sys.exit(1)
 
-    if args.mode == "notify" and not args.slack_webhook and not args.slack_channel:
-        print("[LOI Watcher] Warning: no --slack-webhook or --slack-channel set. Draft PRs will be created but no Slack notification sent.")
+    # Build the notify backend
+    notify_backend = None
+    if args.mode != "dry-run":
+        scripts_dir = Path(__file__).resolve().parent
+        sys.path.insert(0, str(scripts_dir))
+        from backends import load_backend
+
+        backend_config: dict = {"backend": args.notify_backend}
+        if args.notify_url:
+            backend_config["notify_url"] = args.notify_url
+        if args.notify_file:
+            backend_config["file_path"] = args.notify_file
+        if args.notify_token_env:
+            backend_config["auth_token_env"] = args.notify_token_env
+
+        try:
+            notify_backend = load_backend(backend_config)
+        except ValueError as exc:
+            print(f"[LOI Watcher] Error loading notify backend: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    # Parse policy options
+    allowed_scopes = (
+        [s.strip() for s in args.allowed_scopes.split(",") if s.strip()]
+        if args.allowed_scopes else []
+    )
+    block_governance_security: set[str] = set()
+    if args.block_governance_security.lower() != "none":
+        block_governance_security = {
+            t.strip() for t in args.block_governance_security.split(",") if t.strip()
+        }
 
     print(f"[LOI Watcher] Project root: {project_root}")
     print(f"[LOI Watcher] Monitoring: {watch_dir}")
     print(f"[LOI Watcher] Mode: {args.mode}")
     print(f"[LOI Watcher] Batch window: {args.debounce}s")
+    if args.mode != "dry-run":
+        print(f"[LOI Watcher] Notify backend: {args.notify_backend}")
     if args.mode == "auto":
         print(f"[LOI Watcher] Worker command: {args.worker_cmd}")
-    if args.slack_webhook:
-        print("[LOI Watcher] Slack: webhook configured")
-    elif args.slack_channel:
-        print(f"[LOI Watcher] Slack: MCP fallback → {args.slack_channel}")
+        print(f"[LOI Watcher] Policy: {args.policy}")
+        if block_governance_security:
+            print(f"[LOI Watcher] Governance block: security tiers {block_governance_security}")
+        if allowed_scopes:
+            print(f"[LOI Watcher] Allowed scopes: {allowed_scopes}")
     print("[LOI Watcher] Waiting for changes... (Ctrl+C to stop)\n")
 
     handler = LOIHandler(
@@ -649,8 +769,10 @@ def main():
         mode=args.mode,
         debounce=args.debounce,
         worker_cmd=args.worker_cmd,
-        slack_webhook=args.slack_webhook,
-        slack_channel=args.slack_channel,
+        notify_backend=notify_backend,
+        policy=args.policy,
+        allowed_scopes=allowed_scopes,
+        block_governance_security=block_governance_security,
     )
     observer = Observer()
     observer.schedule(handler, str(watch_dir), recursive=True)

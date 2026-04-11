@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# LOI pre-push hook — validates changed rooms before a push.
+#
+# Installation:
+#   cp skills/loi/hooks/pre-push.sample .git/hooks/pre-push
+#   chmod +x .git/hooks/pre-push
+#
+# Or use the helper command:
+#   /loi setup-hook --mode pre-push
+#
+# Behavior:
+#   1. Detects changed docs/index/**/*.md files in the push range.
+#   2. Runs `validate_loi.py --changed-rooms` against the project root.
+#   3. Exits non-zero (blocking the push) if any errors are found.
+#   4. Warns (does NOT block) on unresolved globs or stale paths.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+
+# Locate the validate script relative to this hook or the project.
+VALIDATE_SCRIPT=""
+for candidate in \
+    "$PROJECT_ROOT/skills/loi/scripts/validate_loi.py" \
+    "$HOME/.claude/skills/loi/scripts/validate_loi.py" \
+    "$SCRIPT_DIR/../scripts/validate_loi.py"
+do
+    if [[ -f "$candidate" ]]; then
+        VALIDATE_SCRIPT="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$VALIDATE_SCRIPT" ]]; then
+    echo "[LOI pre-push] validate_loi.py not found — skipping LOI validation." >&2
+    exit 0
+fi
+
+# Check if any docs/index files changed between HEAD and remote.
+# git passes remote/url on stdin; we only care whether index files differ.
+CHANGED=$(git diff --name-only HEAD @{u} 2>/dev/null | grep '^docs/index/' || true)
+
+if [[ -z "$CHANGED" ]]; then
+    # No index changes — nothing to validate.
+    exit 0
+fi
+
+echo "[LOI pre-push] Index files changed — running changed-room validation..."
+echo "$CHANGED" | sed 's/^/  /'
+
+python3 "$VALIDATE_SCRIPT" "$PROJECT_ROOT" --changed-rooms
+STATUS=$?
+
+if [[ $STATUS -ne 0 ]]; then
+    echo ""
+    echo "[LOI pre-push] Validation errors found. Fix them before pushing." >&2
+    echo "  Run: python3 $VALIDATE_SCRIPT $PROJECT_ROOT --changed-rooms" >&2
+    exit 1
+fi
+
+echo "[LOI pre-push] Validation passed."
+exit 0

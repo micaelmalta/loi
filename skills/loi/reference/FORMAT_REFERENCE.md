@@ -264,6 +264,96 @@ USE WHEN: Any component needs current user state or login/logout actions
 
 ---
 
+## Schema Extensions
+
+Optional fields and blocks that unlock additional LOI tooling. Add them to rooms where they apply.
+
+---
+
+### `pattern_aliases` — Room Frontmatter
+
+Lets the semantic PATTERN validator (`validate_patterns.py --level 2`) match a PATTERN label to alternate names used in the room body.
+
+```yaml
+---
+room: Auth Flow
+see_also: ["../infra/config.md"]
+architectural_health: normal
+security_tier: high
+pattern_aliases:
+  - "exponential backoff"
+  - "token rotation without service restart"
+---
+```
+
+**When to add:** If a pattern listed in a `_root.md` PATTERN → LOAD table uses a canonical label that differs from the wording in the room body. Without aliases, the validator marks the pattern as unsupported.
+
+---
+
+### `pattern_metadata` — Room Body Block
+
+Per-pattern temporal metadata for freshness tracking. The validator warns when `last_validated` is older than 14 days.
+
+```
+pattern_metadata:
+  - name: Token rotation without service restart
+    first_introduced: 2026-04-09
+    last_validated: 2026-04-10
+    validation_source: refresh_token_test.go
+  - name: Exponential backoff
+    first_introduced: 2026-03-01
+    last_validated: 2026-04-10
+    validation_source: retry_test.go
+```
+
+Place this block anywhere in the room body (outside code fences). The validator matches entries by normalized pattern name (lowercase, punctuation-stripped).
+
+**Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Pattern label (matched normalized against PATTERN table) |
+| `first_introduced` | No | ISO date when the pattern was first added |
+| `last_validated` | No | ISO date of last manual validation (`YYYY-MM-DD`) |
+| `validation_source` | No | Test file or doc that confirms the pattern is working |
+
+---
+
+### `proposal_metadata` — Proposal Files
+
+Machine-readable provenance block for AI-generated improvement proposals stored under `docs/index/proposals/`.
+
+```
+proposal_metadata:
+  proposal_id: proposal-2026-04-10T08-00-00Z-refusal-context
+  generated_at: 2026-04-10T08:00:00Z
+  source_run_id: eval-run-2026-04-10T07:55:00Z
+  source_run_file: runs/cd-eval-2026-04-10T07-55-00Z.jsonl
+  grader_version: v2.3
+  failure_reason: REFUSAL_CONTEXT
+  failure_count: 3
+  target_room: evals-corpus/prompts.md
+  source_operator_rules:
+    - test before shipping
+    - skill robustness
+```
+
+Place this block at the top of the proposal markdown file (not inside a YAML fence — plain indented YAML-like text so `proposals.py` can find it).
+
+**Required fields:** `proposal_id`, `generated_at`, `source_run_id`, `target_room`
+
+**Optional fields:** `source_run_file`, `grader_version`, `failure_reason`, `failure_count`, `source_operator_rules`
+
+Query and validate proposals with `proposals.py`:
+
+```bash
+python3 skills/loi/scripts/proposals.py <project-root>
+python3 skills/loi/scripts/proposals.py <project-root> --target-room auth/ucan.md
+python3 skills/loi/scripts/proposals.py <project-root> --validate
+```
+
+---
+
 ## Checklist for New Domain Files
 
 - [ ] Each entry has DOES (always required)
