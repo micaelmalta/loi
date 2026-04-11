@@ -216,7 +216,7 @@ def aggregate_governance(project_roots: list[Path]) -> list[dict]:
 # Output formatting
 # ---------------------------------------------------------------------------
 
-def format_text(entries: list[dict]) -> str:
+def format_text(entries: list[dict], verbose: bool = False) -> str:
     if not entries:
         return "  No governance flags found."
 
@@ -226,10 +226,15 @@ def format_text(entries: list[dict]) -> str:
         room = e.get("room", "")[:48]
         health = e.get("health", "normal")
         security = e.get("security", "normal")
-        note = e.get("note", "")[:50]
+        note = e.get("note", "")
         repo = e.get("repo", "")
         prefix = f"[{repo}] " if repo else ""
-        lines.append(f"  {prefix}{room:<50} {health:<10} {security:<12} {note}")
+        if verbose:
+            lines.append(f"  {prefix}{room:<50} {health:<10} {security:<12}")
+            if note:
+                lines.append(f"    {note}")
+        else:
+            lines.append(f"  {prefix}{room:<50} {health:<10} {security:<12} {note[:50]}")
     return "\n".join(lines)
 
 
@@ -255,6 +260,10 @@ def main():
         "--format", choices=["text", "json"], default="text",
         help="Output format (default: text)",
     )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Show full committee_notes without truncation",
+    )
     args = parser.parse_args()
 
     roots = [Path(r).resolve() for r in args.project_roots]
@@ -276,7 +285,7 @@ def main():
     else:
         root_label = ", ".join(r.name for r in roots)
         print(f"LOI Governance [{root_label}] — {len(entries)} flagged room(s)\n")
-        print(format_text(entries))
+        print(format_text(entries, verbose=args.verbose))
 
     sys.exit(0)
 
