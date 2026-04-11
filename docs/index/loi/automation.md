@@ -113,8 +113,20 @@ CONFIG: --watch-path, --mode (notify/auto/dry-run), --notify-backend, --notify-u
 PATTERNS: file-watcher, debounce, strategy-pattern, policy-tiers
 DEPENDS: backends/__init__.py, diff_tables.py, validate_loi.py, runtime.py
 
+# check_stale.py
+DOES: Pre-commit stale index detector — finds staged source files covered by LOI Source paths: fields that have no corresponding staged index file; warns by default, blocks if LOI_STALE_BLOCK=1; skippable via LOI_SKIP=1; resolves coverage via extract_source_paths() scanning all docs/index/ .md files
+SYMBOLS:
+- main() → int
+- find_covering_rooms(project_root: Path, source_file: str) → list[Path]
+- extract_source_paths(room_file: Path) → list[str]
+- get_staged_files(project_root: Path) → list[str]
+USE WHEN: Detecting that source code changed without a corresponding LOI index update
+
+# hooks/pre-commit-stale.sample
+DOES: Pre-commit hook template — locates check_stale.py (repo-local or ~/.claude/skills/loi/), executes it against the repo root; skips silently if script not found; install via setup_hook.py --mode pre-commit-stale
+
 # tests/conftest.py
 DOES: Adds scripts/ directory to sys.path for all pytest sessions
 
-# tests/test_diff_tables.py + test_governance.py + test_runtime.py + test_validate_patterns.py + test_setup_hook.py
-DOES: Pytest test suite — 85 tests covering diff_tables (parse/diff/format/duplicate-key warning), governance (severity ranks, table parsing, frontmatter flags, deduplication true/false positives), runtime (TTL parsing, conflict matrix, concurrent write safety via fcntl locking, summary read/write), validate_patterns (normalize, extract rows, exact/alias/orphan/missing-target scenarios), setup_hook (_ensure_gitignore idempotency, hook install/overwrite/executable-bit)
+# tests/test_diff_tables.py + test_governance.py + test_runtime.py + test_validate_patterns.py + test_setup_hook.py + test_check_stale.py
+DOES: Pytest test suite — 99 tests covering diff_tables, governance, runtime (concurrent locking), validate_patterns, setup_hook, check_stale (coverage detection, LOI_STALE_BLOCK blocking, LOI_SKIP bypass)

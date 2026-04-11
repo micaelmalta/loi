@@ -13,6 +13,7 @@ Source paths: skills/loi/, .github/workflows/, README.md, LEVELS.md
 | Look up LOI entry field format rules (DOES, SYMBOLS, etc.) | loi/skill.md |
 | Validate an LOI index after generation | loi/automation.md |
 | Validate only changed rooms before pushing (pre-push) | loi/automation.md |
+| Warn at commit time when source changed without index update | loi/automation.md |
 | Install pre-push validation hook into a repo | loi/automation.md |
 | Set up Level 7 background daemon (file watcher) | loi/automation.md |
 | Set up pre-commit hook for automatic implementation | loi/automation.md |

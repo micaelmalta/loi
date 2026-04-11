@@ -18,6 +18,19 @@ from pathlib import Path
 
 SUPPORTED_HOOKS = {
     "pre-push": "pre-push.sample",
+    "pre-commit-stale": "pre-commit-stale.sample",
+}
+
+HOOK_EFFECTS = {
+    "pre-push": (
+        "runs validate_loi.py --changed-rooms before every push.\n"
+        "           Push is blocked if any changed index room has broken references."
+    ),
+    "pre-commit-stale": (
+        "warns when staged source files are covered by a LOI room\n"
+        "           that was not also updated in this commit.\n"
+        "           Set LOI_STALE_BLOCK=1 to block the commit instead of warning."
+    ),
 }
 
 
@@ -55,8 +68,7 @@ def install_hook(project_root: Path, mode: str, force: bool) -> int:
 
     print(f"[LOI setup-hook] Installed {mode} hook → {dest}")
     print(f"  Source:  {source}")
-    print(f"  Effect:  runs validate_loi.py --changed-rooms before every push.")
-    print(f"           Push is blocked if any changed index room has broken references.")
+    print(f"  Effect:  {HOOK_EFFECTS.get(mode, '(see hook file for details)')}")
 
     _ensure_gitignore(project_root)
     return 0
@@ -88,7 +100,7 @@ def main():
     parser.add_argument("project_root", help="Path to the git repository root")
     parser.add_argument(
         "--mode", choices=list(SUPPORTED_HOOKS), default="pre-push",
-        help="Which hook to install (default: pre-push)",
+        help="Which hook to install: pre-push (validate on push) or pre-commit-stale (warn on stale index). Default: pre-push",
     )
     parser.add_argument(
         "--force", action="store_true",
