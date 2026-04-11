@@ -93,42 +93,29 @@ class TestMain:
         sys.argv = ["check_stale.py", str(project)]
         assert main() == 0
 
-    def test_staged_source_covered_but_no_index_warns(self, tmp_path, capsys):
+    def test_staged_source_covered_blocks_by_default(self, tmp_path, capsys):
         import subprocess
         project = self._init_git(tmp_path)
-        # Stage a source file covered by LOI
         src_dir = project / "src"
         src_dir.mkdir()
-        src_file = src_dir / "main.py"
-        src_file.write_text("x = 1\n")
+        (src_dir / "main.py").write_text("x = 1\n")
         subprocess.run(["git", "add", "src/main.py"], cwd=project, capture_output=True)
         import sys
         sys.argv = ["check_stale.py", str(project)]
         result = main()
         out = capsys.readouterr().out
-        assert result == 0  # warn only, no block
+        assert result == 1  # blocks by default
         assert "stale" in out.lower()
 
-    def test_loi_skip_env_skips(self, tmp_path, monkeypatch):
+    def test_stale_block_0_warns_only(self, tmp_path, monkeypatch, capsys):
         import subprocess
         project = self._init_git(tmp_path)
         src_dir = project / "src"
         src_dir.mkdir()
         (src_dir / "main.py").write_text("x = 1\n")
         subprocess.run(["git", "add", "src/main.py"], cwd=project, capture_output=True)
-        monkeypatch.setenv("LOI_SKIP", "1")
+        monkeypatch.setenv("LOI_STALE_BLOCK", "0")
         import sys
         sys.argv = ["check_stale.py", str(project)]
-        assert main() == 0
-
-    def test_stale_block_exits_1(self, tmp_path, monkeypatch, capsys):
-        import subprocess
-        project = self._init_git(tmp_path)
-        src_dir = project / "src"
-        src_dir.mkdir()
-        (src_dir / "main.py").write_text("x = 1\n")
-        subprocess.run(["git", "add", "src/main.py"], cwd=project, capture_output=True)
-        monkeypatch.setenv("LOI_STALE_BLOCK", "1")
-        import sys
-        sys.argv = ["check_stale.py", str(project)]
-        assert main() == 1
+        result = main()
+        assert result == 0  # warns but doesn't block

@@ -8,14 +8,10 @@
 #   python3 <skill-root>/scripts/setup_hook.py . --mode pre-commit-stale
 #
 # Options (env vars):
-#   LOI_STALE_BLOCK=1   Block the commit on stale detection (default: warn only)
-#   LOI_SKIP=1          Skip this hook entirely
+#   LOI_STALE_BLOCK=0   Warn only, do not block (default: block)
+# To skip one commit: git commit --no-verify
 
 set -euo pipefail
-
-if [ "${LOI_SKIP:-0}" = "1" ]; then
-  exit 0
-fi
 
 # Locate check_stale.py — search in order:
 #   1. skills/loi/scripts/ in this repo (if LOI is self-hosted)

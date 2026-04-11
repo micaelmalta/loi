@@ -99,12 +99,17 @@ def main():
     )
     parser.add_argument("project_root", help="Path to the git repository root")
     parser.add_argument(
-        "--mode", choices=list(SUPPORTED_HOOKS), default="pre-push",
-        help="Which hook to install: pre-push (validate on push) or pre-commit-stale (warn on stale index). Default: pre-push",
+        "--mode", choices=[*SUPPORTED_HOOKS, "all"], default="all",
+        help=(
+            "Which hook to install. "
+            "all (default): install every supported hook. "
+            "pre-push: validate index on push. "
+            "pre-commit-stale: warn when source changed without index update."
+        ),
     )
     parser.add_argument(
         "--force", action="store_true",
-        help="Overwrite an existing hook at the destination",
+        help="Overwrite existing hooks",
     )
     args = parser.parse_args()
 
@@ -113,7 +118,15 @@ def main():
         print(f"Error: {project_root} is not a directory")
         sys.exit(2)
 
-    sys.exit(install_hook(project_root, args.mode, args.force))
+    modes = list(SUPPORTED_HOOKS) if args.mode == "all" else [args.mode]
+    exit_code = 0
+    for mode in modes:
+        result = install_hook(project_root, mode, args.force)
+        if result == 2:        # fatal config error — stop immediately
+            sys.exit(2)
+        if result != 0:
+            exit_code = result  # remember non-zero (e.g. already-exists) but continue
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

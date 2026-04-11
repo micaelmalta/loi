@@ -11,8 +11,9 @@ Exit codes:
     1 — stale coverage found AND LOI_STALE_BLOCK=1
 
 Environment:
-    LOI_STALE_BLOCK=1   Exit 1 to block the commit (default: warn and exit 0)
-    LOI_SKIP=1          Skip this check entirely
+    LOI_STALE_BLOCK=0   Warn only, do not block the commit (default: block)
+
+To skip: git commit --no-verify
 """
 
 import os
@@ -73,11 +74,8 @@ def find_covering_rooms(project_root: Path, source_file: str) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    if os.environ.get("LOI_SKIP", "0") == "1":
-        return 0
-
     project_root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
-    block = os.environ.get("LOI_STALE_BLOCK", "0") == "1"
+    block = os.environ.get("LOI_STALE_BLOCK", "1") != "0"
 
     staged = get_staged_files(project_root)
     if not staged:
@@ -116,10 +114,10 @@ def main() -> int:
     print()
     if block:
         print("[LOI] Commit blocked. Run '/loi update' to refresh the index.")
-        print("      To skip: LOI_SKIP=1 git commit ...")
+        print("      To skip: git commit --no-verify")
         return 1
     else:
-        print("[LOI] (warning only — set LOI_STALE_BLOCK=1 to block commits)")
+        print("[LOI] (warning only — set LOI_STALE_BLOCK=0 to suppress blocking)")
         return 0
 
 
