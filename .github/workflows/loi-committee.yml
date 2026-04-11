@@ -127,6 +127,7 @@ jobs:
       - name: Run Gemini review
         if: steps.changed.outputs.source_count != '0' && env.LOI_AI_PROVIDER == 'gemini'
         id: gemini
+        continue-on-error: true
         uses: google-github-actions/run-gemini-cli@v0.1.21
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
@@ -199,28 +200,30 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Collect output from whichever provider ran
+      # Uses github-script to safely handle multiline/special-char output
+      # without shell injection from template expansion.
       # -----------------------------------------------------------------------
       - name: Collect review output
         if: steps.changed.outputs.source_count != '0'
         id: review
-        run: |
-          if [ "$LOI_AI_PROVIDER" = "gemini" ]; then
-            REVIEW="${{ steps.gemini.outputs.summary }}"
-          else
-            REVIEW="${{ steps.api_review.outputs.review }}"
-          fi
+        uses: actions/github-script@v7
+        env:
+          GEMINI_SUMMARY: ${{ steps.gemini.outputs.summary }}
+          API_REVIEW: ${{ steps.api_review.outputs.review }}
+        with:
+          script: |
+            const provider = process.env.LOI_AI_PROVIDER;
+            const text = provider === 'gemini'
+              ? (process.env.GEMINI_SUMMARY || '⚠️ No output — check GEMINI_API_KEY secret.')
+              : (process.env.API_REVIEW || '⚠️ No output — check API key secret.');
 
-          HAS_CRITICAL="false"
-          if echo "$REVIEW" | grep -qE '"architectural_health":\s*"critical"|"security_tier":\s*"(sensitive|high)"'; then
-            HAS_CRITICAL="true"
-          fi
+            const hasCritical =
+              text.includes('"architectural_health": "critical"') ||
+              text.includes('"security_tier": "sensitive"') ||
+              text.includes('"security_tier": "high"');
 
-          {
-            echo "text<<EOF"
-            echo "$REVIEW"
-            echo "EOF"
-            echo "has_critical=$HAS_CRITICAL"
-          } >> "$GITHUB_OUTPUT"
+            core.setOutput('text', text);
+            core.setOutput('has_critical', hasCritical ? 'true' : 'false');
 
       - name: Post review comment
         if: steps.changed.outputs.source_count != '0'
