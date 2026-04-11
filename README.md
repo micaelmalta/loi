@@ -1,8 +1,12 @@
 # LOI — Library of Intent
 
-An agent skill that gives AI models a deterministic, plain-English map of a codebase. Instead of searching, the model reads **Campus → Building → Room** and reaches the right file in three reads.
+> *In French, **loi** means Law. In this framework, the specification is the Law — not the code.*
 
-The generated index lives in your target repo under `docs/index/`. This repo contains only the skill definition, format reference, and tooling.
+AI coding assistants are fast. But without a map, they search probabilistically, duplicate abstractions, and drift from the architecture you intended. LOI gives them — and you — a deterministic, plain-English map of any codebase.
+
+Instead of embedding, re-ranking, or hoping the right file surfaces, the model reads a three-level index (**Campus → Building → Room**) and reaches the right context in three reads. Navigation cost becomes constant regardless of codebase size.
+
+For the full argument — why this matters, how it compares to RAG and knowledge graphs, and where the approach is heading — read the **[MANIFESTO](MANIFESTO.md)**.
 
 ---
 
@@ -18,13 +22,23 @@ The index has three levels:
 
 Each entry answers *what does this code do?* via `DOES`, `SYMBOLS`, `PATTERNS`, and other fields. Navigation is always three reads regardless of codebase size.
 
+The generated index lives in your target repo under `docs/index/`. This repo contains only the skill definition, format reference, and tooling.
+
 ---
 
 ## Installation
 
-Copy or symlink the `skills/loi` folder so `SKILL.md` is at `<skill-root>/loi/SKILL.md`.
+```bash
+curl -fsSL https://raw.githubusercontent.com/micaelmalta/loi/main/install.sh | bash
+```
 
-**Claude Code:** `~/.claude/skills/loi` (global) or `<project>/.claude/skills/loi` (per-project).
+The script detects Claude Code, prompts for global or per-project install, and handles updates if LOI is already present.
+
+**Manual alternative (global):**
+
+```bash
+git clone https://github.com/micaelmalta/loi.git ~/.claude/skills/loi
+```
 
 After installation, say `"generate loi"`, `"update loi"`, or `"navigate codebase"` to trigger the skill.
 
