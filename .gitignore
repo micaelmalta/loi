@@ -28,3 +28,6 @@ Thumbs.db
 # Temp
 /tmp/
 *.log
+# LOI runtime state (ephemeral, never commit)
+.loi-claims.json
+.loi-claims.json.lock
