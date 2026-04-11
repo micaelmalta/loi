@@ -272,16 +272,97 @@ jobs:
               });
             }
 
+  # -------------------------------------------------------------------------
+  # Governance gate — static check, no API key needed, always runs.
+  # Reads architectural_health / security_tier / committee_notes directly
+  # from room frontmatter and GOVERNANCE WATCHLIST tables.
+  # -------------------------------------------------------------------------
+  governance:
+    name: LOI Governance Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run governance check
+        id: gov
+        run: |
+          python3 skills/loi/scripts/governance.py . --format json > /tmp/gov.json 2>/dev/null \
+            || echo "[]" > /tmp/gov.json
+
+          python3 - <<'PYEOF'
+          import json, os
+          data = json.load(open('/tmp/gov.json'))
+          n = sum(1 for e in data
+                  if e.get('health') == 'critical' or e.get('security') == 'sensitive')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'critical_count={n}\n')
+          PYEOF
+
+          python3 skills/loi/scripts/governance.py . --verbose > /tmp/gov_verbose.txt 2>&1 \
+            || echo "(no LOI index found)" > /tmp/gov_verbose.txt
+
+      - name: Post governance comment
+        uses: actions/github-script@v7
+        env:
+          CRITICAL_COUNT: ${{ steps.gov.outputs.critical_count }}
+        with:
+          script: |
+            const fs = require('fs');
+            const criticalCount = parseInt(process.env.CRITICAL_COUNT || '0');
+            const text = fs.existsSync('/tmp/gov_verbose.txt')
+              ? fs.readFileSync('/tmp/gov_verbose.txt', 'utf8').trim()
+              : '(no output)';
+
+            const badge = criticalCount > 0 ? ' 🚨 **CRITICAL FLAGS**' : '';
+            const body = [
+              `## 🏛️ LOI Governance${badge}`,
+              '',
+              '```',
+              text,
+              '```',
+              '---',
+              '*[LOI Committee CI](.github/workflows/loi-committee.yml)*',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.includes('LOI Governance'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
+
+            if (criticalCount > 0 && process.env.LOI_FAIL_ON_CRITICAL === 'true') {
+              core.setFailed(`${criticalCount} critical governance flag(s) found. See PR comment for details.`);
+            }
+
   committee-gate:
     name: LOI Committee Gate
-    needs: committee-review
+    needs: [committee-review, governance]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check result
         run: |
-          if [ "${{ needs.committee-review.result }}" = "failure" ]; then
-            echo "One or more committee personas failed."
+          REVIEW="${{ needs.committee-review.result }}"
+          GOVERNANCE="${{ needs.governance.result }}"
+          if [ "$REVIEW" = "failure" ] || [ "$GOVERNANCE" = "failure" ]; then
+            echo "LOI Committee check failed."
+            echo "  committee-review: $REVIEW"
+            echo "  governance:       $GOVERNANCE"
             exit 1
           fi
-          echo "Committee review complete. Check PR comments for findings."
+          echo "LOI Committee review complete. Check PR comments for findings."
