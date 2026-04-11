@@ -8,12 +8,12 @@ on:
       provider:
         description: "AI provider"
         required: false
-        default: "anthropic"
+        default: "gemini"
         type: choice
         options:
+          - gemini
           - anthropic
           - openai
-          - gemini
 
 # Cancel in-progress runs for the same PR
 concurrency:
@@ -25,12 +25,9 @@ permissions:
   pull-requests: write
 
 env:
-  # Priority: workflow_dispatch input → repo variable → default
-  LOI_AI_PROVIDER: ${{ inputs.provider || vars.LOI_AI_PROVIDER || 'anthropic' }}
+  # Priority: workflow_dispatch input → repo variable → default (gemini)
+  LOI_AI_PROVIDER: ${{ inputs.provider || vars.LOI_AI_PROVIDER || 'gemini' }}
   LOI_FAIL_ON_CRITICAL: ${{ vars.LOI_FAIL_ON_CRITICAL || 'true' }}
-  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
 jobs:
   committee-review:
@@ -38,9 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        persona:
-          - architect
-          - security
+        persona: [architect, security]
       fail-fast: false
 
     steps:
@@ -72,9 +67,12 @@ jobs:
             echo "(no LOI index found)" > /tmp/loi_context.txt
           fi
 
-      - name: Run ${{ matrix.persona }} review
+      # -----------------------------------------------------------------------
+      # Build prompt (shared across all providers)
+      # -----------------------------------------------------------------------
+      - name: Build review prompt
         if: steps.changed.outputs.source_count != '0'
-        id: review
+        id: prompt
         uses: actions/github-script@v7
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
@@ -83,215 +81,193 @@ jobs:
           script: |
             const fs = require('fs');
             const persona = process.env.PERSONA;
-            const provider = process.env.LOI_AI_PROVIDER;
             const files = (process.env.CHANGED_FILES || '').trim();
             const loiContext = fs.readFileSync('/tmp/loi_context.txt', 'utf8');
 
-            // Read up to 20 changed source files (5000 chars each)
             let fileContents = '';
             const fileList = files.split('\n').filter(f => f.trim());
             for (const file of fileList.slice(0, 20)) {
               try {
-                const content = fs.readFileSync(file, 'utf8');
-                fileContents += `\n--- ${file} ---\n${content.slice(0, 5000)}\n`;
-              } catch (_) { /* file deleted */ }
+                fileContents += `\n--- ${file} ---\n${fs.readFileSync(file, 'utf8').slice(0, 4000)}\n`;
+              } catch (_) {}
             }
 
-            // Persona prompts
+            const sharedFooter = [
+              'LOI Index Context:\n' + loiContext,
+              'Changed files:\n' + (fileContents || files),
+            ].join('\n\n');
+
             const prompts = {
               architect: [
                 'You are the Architect persona of the LOI RLM Committee. Be concise.',
-                '',
-                'Review the changed files for architectural concerns:',
-                '- Mixed concerns (HTTP handling with business logic, DB queries in handlers)',
-                '- Tight coupling or circular dependencies',
-                '- Missing or leaky abstractions',
-                '- Files that should be split or merged',
-                '',
-                'Rate each flagged file with architectural_health: "healthy", "warning", or "critical".',
-                '',
-                'LOI Index Context:',
-                loiContext,
-                '',
-                'Changed files:',
-                fileContents || files,
-                '',
-                'For each file with issues, output a JSON block like:',
-                '```json',
-                '{"file": "<path>", "architectural_health": "<rating>", "committee_notes": "<one sentence>"}',
-                '```',
-                '',
-                'If no issues found, say so briefly.',
-              ].join('\n'),
-
+                'Review for: mixed concerns, tight coupling, missing abstractions, files that should be split.',
+                'Rate each flagged file: architectural_health = "healthy" | "warning" | "critical".',
+                sharedFooter,
+                'For each issue output a JSON block:\n```json\n{"file":"<path>","architectural_health":"<rating>","committee_notes":"<one sentence>"}\n```',
+                'If no issues, say so briefly.',
+              ].join('\n\n'),
               security: [
                 'You are the Security persona of the LOI RLM Committee. Be concise.',
-                '',
-                'Review the changed files for security concerns:',
-                '- Raw SQL without parameterization',
-                '- PII without encryption or masking',
-                '- Auth tokens or secrets in code',
-                '- Missing input validation at system boundaries',
-                '- Unsafe deserialization',
-                '',
-                'Rate each flagged file with security_tier: "standard", "high", or "sensitive".',
-                '',
-                'LOI Index Context:',
-                loiContext,
-                '',
-                'Changed files:',
-                fileContents || files,
-                '',
-                'For each file with issues, output a JSON block like:',
-                '```json',
-                '{"file": "<path>", "security_tier": "<rating>", "committee_notes": "<one sentence>"}',
-                '```',
-                '',
-                'If no issues found, say so briefly.',
-              ].join('\n'),
+                'Review for: raw SQL, PII without encryption, secrets in code, missing input validation.',
+                'Rate each flagged file: security_tier = "standard" | "high" | "sensitive".',
+                sharedFooter,
+                'For each issue output a JSON block:\n```json\n{"file":"<path>","security_tier":"<rating>","committee_notes":"<one sentence>"}\n```',
+                'If no issues, say so briefly.',
+              ].join('\n\n'),
             };
 
-            const prompt = prompts[persona];
+            core.setOutput('text', prompts[persona]);
+            core.setOutput('files_count', String(fileList.length));
 
-            // --- Provider dispatch ---
+      # -----------------------------------------------------------------------
+      # Provider: Gemini
+      # Official action: google-github-actions/run-gemini-cli
+      # Requires secret: GEMINI_API_KEY
+      # -----------------------------------------------------------------------
+      - name: Run Gemini review
+        if: steps.changed.outputs.source_count != '0' && env.LOI_AI_PROVIDER == 'gemini'
+        id: gemini
+        uses: google-github-actions/run-gemini-cli@v1
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.LOI_AI_MODEL || 'gemini-2.0-flash' }}
+          prompt: ${{ steps.prompt.outputs.text }}
+        # Output available at: steps.gemini.outputs.summary
+
+      # -----------------------------------------------------------------------
+      # Provider: Anthropic
+      # No official action suited for batch review; direct API used.
+      # (anthropics/claude-code-action is for interactive PR assistance)
+      # Requires secret: ANTHROPIC_API_KEY
+      #
+      # Provider: OpenAI
+      # No official GitHub Action exists; direct API used.
+      # Requires secret: OPENAI_API_KEY
+      # -----------------------------------------------------------------------
+      - name: Run API review (anthropic / openai)
+        if: >-
+          steps.changed.outputs.source_count != '0' &&
+          (env.LOI_AI_PROVIDER == 'anthropic' || env.LOI_AI_PROVIDER == 'openai')
+        id: api_review
+        uses: actions/github-script@v7
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LOI_AI_MODEL: ${{ vars.LOI_AI_MODEL }}
+        with:
+          script: |
+            const provider = process.env.LOI_AI_PROVIDER;
+            const prompt = `${{ steps.prompt.outputs.text }}`;
+
             async function callAI(provider, prompt) {
               if (provider === 'anthropic') {
                 const key = process.env.ANTHROPIC_API_KEY;
                 if (!key) throw new Error('ANTHROPIC_API_KEY secret not set');
                 const resp = await fetch('https://api.anthropic.com/v1/messages', {
                   method: 'POST',
-                  headers: {
-                    'x-api-key': key,
-                    'anthropic-version': '2023-06-01',
-                    'content-type': 'application/json',
-                  },
+                  headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
                   body: JSON.stringify({
                     model: process.env.LOI_AI_MODEL || 'claude-sonnet-4-6',
                     max_tokens: 1024,
                     messages: [{ role: 'user', content: prompt }],
                   }),
                 });
-                if (!resp.ok) throw new Error(`Anthropic API error: ${resp.status} ${await resp.text()}`);
-                const data = await resp.json();
-                return data.content?.[0]?.text || '';
+                if (!resp.ok) throw new Error(`Anthropic ${resp.status}: ${await resp.text()}`);
+                return (await resp.json()).content?.[0]?.text || '';
               }
-
               if (provider === 'openai') {
                 const key = process.env.OPENAI_API_KEY;
                 if (!key) throw new Error('OPENAI_API_KEY secret not set');
                 const resp = await fetch('https://api.openai.com/v1/chat/completions', {
                   method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${key}`,
-                    'Content-Type': 'application/json',
-                  },
+                  headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     model: process.env.LOI_AI_MODEL || 'gpt-4o',
-                    messages: [{ role: 'user', content: prompt }],
                     max_tokens: 1024,
+                    messages: [{ role: 'user', content: prompt }],
                   }),
                 });
-                if (!resp.ok) throw new Error(`OpenAI API error: ${resp.status} ${await resp.text()}`);
-                const data = await resp.json();
-                return data.choices?.[0]?.message?.content || '';
+                if (!resp.ok) throw new Error(`OpenAI ${resp.status}: ${await resp.text()}`);
+                return (await resp.json()).choices?.[0]?.message?.content || '';
               }
-
-              if (provider === 'gemini') {
-                const key = process.env.GEMINI_API_KEY;
-                if (!key) throw new Error('GEMINI_API_KEY secret not set');
-                const model = process.env.LOI_AI_MODEL || 'gemini-2.0-flash';
-                const resp = await fetch(
-                  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-                  {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      contents: [{ parts: [{ text: prompt }] }],
-                      generationConfig: { maxOutputTokens: 1024 },
-                    }),
-                  }
-                );
-                if (!resp.ok) throw new Error(`Gemini API error: ${resp.status} ${await resp.text()}`);
-                const data = await resp.json();
-                return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-              }
-
-              throw new Error(`Unknown provider: ${provider}. Use anthropic, openai, or gemini.`);
             }
 
-            let reviewText;
-            try {
-              reviewText = await callAI(provider, prompt);
-            } catch (err) {
-              reviewText = `⚠️ AI review unavailable: ${err.message}`;
-            }
+            let review;
+            try { review = await callAI(provider, prompt); }
+            catch (err) { review = `⚠️ Review unavailable: ${err.message}`; }
+            core.setOutput('review', review);
 
-            // Detect critical flags in the response
-            const hasCritical =
-              reviewText.includes('"architectural_health": "critical"') ||
-              reviewText.includes('"security_tier": "sensitive"') ||
-              reviewText.includes('"security_tier": "high"');
+      # -----------------------------------------------------------------------
+      # Collect output from whichever provider ran
+      # -----------------------------------------------------------------------
+      - name: Collect review output
+        if: steps.changed.outputs.source_count != '0'
+        id: review
+        run: |
+          if [ "$LOI_AI_PROVIDER" = "gemini" ]; then
+            REVIEW="${{ steps.gemini.outputs.summary }}"
+          else
+            REVIEW="${{ steps.api_review.outputs.review }}"
+          fi
 
-            core.setOutput('review', reviewText);
-            core.setOutput('has_critical', hasCritical ? 'true' : 'false');
-            core.setOutput('provider', provider);
-            core.setOutput('files_reviewed', String(fileList.length));
+          HAS_CRITICAL="false"
+          if echo "$REVIEW" | grep -qE '"architectural_health":\s*"critical"|"security_tier":\s*"(sensitive|high)"'; then
+            HAS_CRITICAL="true"
+          fi
+
+          {
+            echo "text<<EOF"
+            echo "$REVIEW"
+            echo "EOF"
+            echo "has_critical=$HAS_CRITICAL"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Post review comment
         if: steps.changed.outputs.source_count != '0'
         uses: actions/github-script@v7
         env:
-          REVIEW: ${{ steps.review.outputs.review }}
+          REVIEW: ${{ steps.review.outputs.text }}
           HAS_CRITICAL: ${{ steps.review.outputs.has_critical }}
-          PROVIDER: ${{ steps.review.outputs.provider }}
-          FILES_REVIEWED: ${{ steps.review.outputs.files_reviewed }}
+          FILES_COUNT: ${{ steps.prompt.outputs.files_count }}
         with:
           script: |
             const persona = '${{ matrix.persona }}';
             const icon = persona === 'architect' ? '🏗️' : '🛡️';
-            const review = process.env.REVIEW || '(no review output)';
+            const review = process.env.REVIEW || '(no output)';
             const hasCritical = process.env.HAS_CRITICAL === 'true';
-            const provider = process.env.PROVIDER || 'unknown';
-            const filesReviewed = process.env.FILES_REVIEWED || '0';
-            const criticalBadge = hasCritical ? ' 🚨 **CRITICAL FLAGS**' : '';
+            const provider = process.env.LOI_AI_PROVIDER;
+            const filesCount = process.env.FILES_COUNT || '0';
+            const badge = hasCritical ? ' 🚨 **CRITICAL FLAGS**' : '';
 
             const body = [
-              `## ${icon} LOI Committee — ${persona.charAt(0).toUpperCase() + persona.slice(1)} Review${criticalBadge}`,
-              '',
-              `**Provider:** \`${provider}\` | **Files reviewed:** ${filesReviewed}`,
+              `## ${icon} LOI Committee — ${persona.charAt(0).toUpperCase() + persona.slice(1)} Review${badge}`,
+              `**Provider:** \`${provider}\` | **Files reviewed:** ${filesCount}`,
               '',
               review,
-              '',
               '---',
-              '*Posted by [LOI Committee CI](.github/workflows/loi-committee.yml)*',
+              '*[LOI Committee CI](.github/workflows/loi-committee.yml)*',
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: context.repo.owner, repo: context.repo.repo,
               issue_number: context.issue.number,
             });
 
             const marker = `LOI Committee — ${persona.charAt(0).toUpperCase() + persona.slice(1)} Review`;
-            const existing = comments.find(c => c.body && c.body.includes(marker));
+            const existing = comments.find(c => c.body?.includes(marker));
 
             if (existing) {
               await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
               });
             } else {
               await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
               });
             }
 
-  # Gate: fails the check if any persona flagged critical issues
   committee-gate:
     name: LOI Committee Gate
     needs: committee-review
