@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# LOI pre-commit stale index check
+#
+# Warns (or blocks) when staged source files are covered by a LOI room
+# that was not also updated in this commit.
+#
+# Install:
+#   python3 <skill-root>/scripts/setup_hook.py . --mode pre-commit-stale
+#
+# Options (env vars):
+#   LOI_STALE_BLOCK=0   Warn only, do not block (default: block)
+# To skip one commit: git commit --no-verify
+
+set -euo pipefail
+
+# Locate check_stale.py — search in order:
+#   1. skills/loi/scripts/ in this repo (if LOI is self-hosted)
+#   2. ~/.claude/skills/loi/scripts/ (global install)
+#   3. Relative to this hook file
+SCRIPT=""
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if [ -f "${REPO_ROOT}/skills/loi/scripts/check_stale.py" ]; then
+  SCRIPT="${REPO_ROOT}/skills/loi/scripts/check_stale.py"
+elif [ -f "${HOME}/.claude/skills/loi/scripts/check_stale.py" ]; then
+  SCRIPT="${HOME}/.claude/skills/loi/scripts/check_stale.py"
+else
+  # Script not found — skip silently rather than blocking commits
+  exit 0
+fi
+
+exec python3 "$SCRIPT" "$REPO_ROOT"

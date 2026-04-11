@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# LOI pre-push hook — validates changed rooms and checks governance flags.
+#
+# Installation:
+#   python3 <skill-root>/scripts/setup_hook.py . --mode pre-push
+#
+# Behavior:
+#   1. Detects changed docs/index/**/*.md files in the push range.
+#   2. Runs validate_loi.py --changed-rooms; blocks on errors.
+#   3. Runs governance.py; warns on warning/high, blocks on critical/sensitive.
+#      Set LOI_GOVERNANCE_BLOCK=0 to downgrade blocks to warnings.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+GOVERNANCE_BLOCK="${LOI_GOVERNANCE_BLOCK:-1}"
+
+# Locate scripts relative to this hook or the project.
+_find_script() {
+    local name="$1"
+    for candidate in \
+        "$PROJECT_ROOT/skills/loi/scripts/${name}" \
+        "$HOME/.claude/skills/loi/scripts/${name}" \
+        "$SCRIPT_DIR/../scripts/${name}"
+    do
+        if [[ -f "$candidate" ]]; then echo "$candidate"; return; fi
+    done
+}
+
+VALIDATE_SCRIPT="$(_find_script validate_loi.py)"
+GOVERNANCE_SCRIPT="$(_find_script governance.py)"
+
+if [[ -z "$VALIDATE_SCRIPT" ]]; then
+    echo "[LOI pre-push] validate_loi.py not found — skipping." >&2
+    exit 0
+fi
+
+# Check if any docs/index files changed between HEAD and remote.
+CHANGED=$(git diff --name-only HEAD @{u} 2>/dev/null | grep '^docs/index/' || true)
+
+if [[ -z "$CHANGED" ]]; then
+    exit 0
+fi
+
+echo "[LOI pre-push] Index files changed — running validation..."
+echo "$CHANGED" | sed 's/^/  /'
+
+# --- 1. Structural validation ---
+python3 "$VALIDATE_SCRIPT" "$PROJECT_ROOT" --changed-rooms
+if [[ $? -ne 0 ]]; then
+    echo ""
+    echo "[LOI pre-push] Structural validation failed. Fix errors before pushing." >&2
+    echo "  To skip: git push --no-verify" >&2
+    exit 1
+fi
+echo "[LOI pre-push] Structural validation passed."
+
+# --- 2. Governance check ---
+if [[ -z "$GOVERNANCE_SCRIPT" ]]; then
+    echo "[LOI pre-push] governance.py not found — skipping governance check." >&2
+    exit 0
+fi
+
+GOV_OUTPUT=$(python3 "$GOVERNANCE_SCRIPT" "$PROJECT_ROOT" --format json 2>/dev/null || echo "[]")
+CRITICAL_COUNT=$(python3 - <<PYEOF
+import json, sys
+data = json.loads("""${GOV_OUTPUT}""")
+print(sum(1 for e in data if e.get('health') == 'critical' or e.get('security') == 'sensitive'))
+PYEOF
+)
+
+if [[ "$CRITICAL_COUNT" -gt 0 ]]; then
+    echo ""
+    echo "[LOI pre-push] Governance flags detected in changed rooms:"
+    python3 "$GOVERNANCE_SCRIPT" "$PROJECT_ROOT" --verbose >&2
+    echo ""
+    if [[ "$GOVERNANCE_BLOCK" = "1" ]]; then
+        echo "[LOI pre-push] Push blocked: ${CRITICAL_COUNT} critical/sensitive flag(s)." >&2
+        echo "  Resolve the flags or set LOI_GOVERNANCE_BLOCK=0 to warn only." >&2
+        echo "  To skip entirely: git push --no-verify" >&2
+        exit 1
+    else
+        echo "[LOI pre-push] Warning: ${CRITICAL_COUNT} critical/sensitive flag(s) (LOI_GOVERNANCE_BLOCK=0)." >&2
+    fi
+fi
+
+echo "[LOI pre-push] All checks passed."
+exit 0

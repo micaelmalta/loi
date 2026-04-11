@@ -40,7 +40,7 @@ echo "[LOI Pre-Commit] Detected staged LOI index changes:"
 echo "$STAGED_INDEX_FILES" | while read -r f; do echo "  - $f"; done
 
 # Extract the diff for changed index files
-DIFF=$(git diff --cached -- ${INDEX_PATH}/ 2>/dev/null)
+DIFF=$(git diff --cached -- "${INDEX_PATH}/" 2>/dev/null)
 
 # Check if any intent fields (DOES, SYMBOLS, TYPE, etc.) actually changed
 if ! echo "$DIFF" | grep -qE '^\+.*(DOES:|SYMBOLS:|TYPE:|INTERFACE:|PATTERNS:)'; then
@@ -66,7 +66,7 @@ already in a commit flow). Modify only the source files referenced in the change
 Run the test suite. If tests pass, the changes will be auto-staged into this commit."
 
 # Invoke the AI worker
-if ! $WORKER_CMD -p "$PROMPT" 2>&1; then
+if ! "${WORKER_CMD}" -p "$PROMPT" 2>&1; then
     echo "[LOI Pre-Commit] Worker failed. Aborting commit."
     echo "[LOI Pre-Commit] Set LOI_SKIP=1 to bypass: LOI_SKIP=1 git commit ..."
     exit 1

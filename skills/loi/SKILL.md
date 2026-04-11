@@ -4,10 +4,10 @@ description: >
   Codebase "Library of Intent" for LLM navigation. Replaces probabilistic global searching with a deterministic, plain-English navigation hierarchy. Uses Campus → Building → Room nested indices to scale indefinitely. Use as the default codebase navigation method when docs/index/_root.md exists. Use for generating or updating the full index when requested. Uses parallel Agent workers for generation.
 triggers:
   - /loi
-  - /loi-generate
-  - /loi-update
-  - /loi-validate
-  - /loi-implement
+  - /loi generate
+  - /loi update
+  - /loi validate
+  - /loi implement
   - "generate loi"
   - "full loi"
   - "rebuild index"
@@ -26,10 +26,10 @@ triggers:
 | Trigger / Keyword | Mode |
 |-------------------|------|
 | `/loi` (no args), "navigate codebase" | **Navigate** (default) |
-| `/loi-generate`, "full loi", "full codebase index", "rebuild index" | **Full-Generate** |
-| `/loi-update`, "update loi", "refresh loi", "refresh index", "incremental update" | **Incremental-Generate** |
-| `/loi-implement`, "implement loi changes", "sync intent to code" | **Implement** |
-| `/loi-validate` | **Validate** |
+| `/loi generate`, "full loi", "full codebase index", "rebuild index" | **Full-Generate** |
+| `/loi update`, "update loi", "refresh loi", "refresh index", "incremental update" | **Incremental-Generate** |
+| `/loi implement`, "implement loi changes", "sync intent to code" | **Implement** |
+| `/loi validate` | **Validate** |
 
 If ambiguous, default to **Navigate**. "Rebuild" without further context means **Full-Generate**.
 
@@ -338,7 +338,45 @@ The `/loi implement` command is the IDE-native way (Option A). Two additional au
   - `--mode auto`: validate → implement via AI → commit → PR. Full autonomy, opt-in.
   - `--mode dry-run`: log only.
 
-  Slack notifications use `--slack-webhook` (incoming webhook URL, preferred) or fall back to `--slack-channel` (sends via Slack MCP tool if available). Changes within the batch window (`--debounce`, default 5s) are grouped into a single PR.
+  Notifications use the pluggable `--notify-backend` flag. Legacy `--slack-webhook` / `--slack-channel` flags still work (deprecated). Changes within the batch window (`--debounce`, default 5s) are grouped into a single PR. In `auto` mode, a `--policy` flag gates what the worker is allowed to implement.
+
+  ```bash
+  # Notify mode — Slack webhook (preferred)
+  uv run --with watchdog watcher.py --notify-backend slack --notify-url https://hooks.slack.com/services/...
+
+  # Notify mode — write events to a JSONL file
+  uv run --with watchdog watcher.py --notify-backend file --notify-file loi-events.jsonl
+
+  # Notify mode — POST to a custom HTTP endpoint
+  uv run --with watchdog watcher.py --notify-backend webhook --notify-url https://example.com/loi-hook
+
+  # Auto mode — create PR but never invoke implement worker (safest auto option)
+  uv run --with watchdog watcher.py --mode auto --policy draft-only --notify-backend slack --notify-url https://...
+
+  # Auto mode — implement only test files; block on sensitive rooms
+  uv run --with watchdog watcher.py --mode auto --policy tests-safe --notify-backend webhook --notify-url https://...
+
+  # Auto mode — implement within explicit scopes only
+  uv run --with watchdog watcher.py --mode auto --policy scoped-code-safe \
+    --allowed-scopes "docs/**,tests/**" --notify-backend slack --notify-url https://...
+
+  # Auto mode — full autonomy, disable governance blocking
+  uv run --with watchdog watcher.py --mode auto --policy full-auto \
+    --block-governance-security none --notify-backend slack --notify-url https://...
+  ```
+
+  **Policy tiers** (controls what `--mode auto` is allowed to implement):
+
+  | Policy | Behaviour |
+  |--------|-----------|
+  | `notify-only` | Validate + notify; worker never invoked |
+  | `draft-only` | Branch + draft PR created; worker not invoked |
+  | `docs-safe` | Implement only if all source files are under `docs/` |
+  | `tests-safe` | Implement only if all source files are test files |
+  | `scoped-code-safe` | Implement only within `--allowed-scopes` globs |
+  | `full-auto` | No scope restriction (default) |
+
+  Regardless of policy, auto-implement is always blocked if a changed room has `security_tier` matching `--block-governance-security` (default: `sensitive`) or `architectural_health: critical`. A conflicting room claim from another agent also blocks the worker.
 
 See the README for setup instructions.
 
@@ -400,7 +438,133 @@ The script checks:
 - Every source directory with code files is covered by at least one room
 - No room exceeds ~150 entries
 
+**Changed-rooms mode** — validate only rooms touched in the current git diff (useful during development):
+
+```bash
+python3 <skill-base-dir>/scripts/validate_loi.py <project-root> --changed-rooms
+```
+
+**CI mode** — treat warnings as errors (exits 1 if any warnings exist):
+
+```bash
+python3 <skill-base-dir>/scripts/validate_loi.py <project-root> --ci
+```
+
+Both flags can be combined. The pre-push hook runs `--changed-rooms` automatically before every push.
+
+**Install the pre-push hook** with `setup_hook.py`:
+
+```bash
+python3 <skill-base-dir>/scripts/setup_hook.py <project-root>
+python3 <skill-base-dir>/scripts/setup_hook.py <project-root> --force   # overwrite existing
+```
+
+This copies `hooks/pre-push.sample` to `<project-root>/.git/hooks/pre-push` and makes it executable. Equivalent to the manual `cp` but discoverable as a skill command.
+
 Fix any reported errors before considering the index complete.
+
+---
+
+## Pattern Validation
+
+Verify that every PATTERN entry in `_root.md` files is semantically grounded in the room it points to.
+
+```bash
+python3 <skill-base-dir>/scripts/validate_patterns.py <project-root>
+python3 <skill-base-dir>/scripts/validate_patterns.py <project-root> --level 2
+```
+
+**Levels:**
+- `1` (default) — Pattern label (normalized) must appear in the target room body.
+- `2` — Also checks `pattern_aliases` frontmatter and `pattern_metadata` freshness (`last_validated` within 14 days).
+
+**Output categories:**
+- `ERRORS` — Target room file missing entirely.
+- `ORPHANED PATTERNS` — Label not found in room body and no aliases match.
+- `WARNINGS` — Alias-only support, or `last_validated` is stale (>14 days).
+
+---
+
+## Table Diff
+
+Compute row-level deltas for TASK, PATTERN, and GOVERNANCE tables between two git revisions.
+
+```bash
+python3 <skill-base-dir>/scripts/diff_tables.py <project-root> docs/index/auth/_root.md
+python3 <skill-base-dir>/scripts/diff_tables.py <project-root> docs/index/_root.md --from HEAD~3 --to HEAD
+```
+
+The watcher daemon calls this automatically and attaches the table diff to Slack/webhook notifications when a `_root.md` file changes.
+
+---
+
+## Governance Aggregation
+
+Aggregate GOVERNANCE WATCHLIST entries from all `_root.md` files, sorted by combined severity (security + health).
+
+```bash
+python3 <skill-base-dir>/scripts/governance.py <project-root>
+python3 <skill-base-dir>/scripts/governance.py <project-root> --security sensitive
+python3 <skill-base-dir>/scripts/governance.py <project-root> --health warning
+python3 <skill-base-dir>/scripts/governance.py <project-root> --format json
+
+# Multi-repo fleet view
+python3 <skill-base-dir>/scripts/governance.py /repos/alpha /repos/beta /repos/gamma
+```
+
+Also surfaces rooms with non-normal `architectural_health` or `security_tier` frontmatter flags that aren't already covered by a watchlist entry.
+
+---
+
+## Runtime Coordination (Room Claims)
+
+Advisory-first coordination so multiple agents avoid editing the same room simultaneously. Claims are stored in `.loi-claims.json` at the project root (gitignored).
+
+```bash
+# Claim a room before editing it
+python3 <skill-base-dir>/scripts/runtime.py claim auth/ucan.md --intent edit --ttl 15m
+
+# Extend your claim while working
+python3 <skill-base-dir>/scripts/runtime.py heartbeat auth/ucan.md
+
+# Release when done
+python3 <skill-base-dir>/scripts/runtime.py release auth/ucan.md
+
+# Check who holds a claim
+python3 <skill-base-dir>/scripts/runtime.py status auth/ucan.md --include-freshness
+
+# Record a handoff summary
+python3 <skill-base-dir>/scripts/runtime.py summary auth/ucan.md "Working on TTL path in MintToken"
+
+# List all active claims
+python3 <skill-base-dir>/scripts/runtime.py claims
+python3 <skill-base-dir>/scripts/runtime.py claims --repo my-repo
+```
+
+**Intent options:** `read` | `edit` | `review` | `security-sweep`
+
+**Conflict matrix:** edit + edit = conflict (blocked); security-sweep + edit = governance-sensitive (warning). All other combinations allow with optional visibility notice.
+
+---
+
+## Proposal Provenance
+
+Query and validate AI-generated improvement proposals stored under `docs/index/proposals/`.
+
+```bash
+# List all proposals
+python3 <skill-base-dir>/scripts/proposals.py <project-root>
+
+# Filter by room, grader version, or failure reason
+python3 <skill-base-dir>/scripts/proposals.py <project-root> --target-room auth/ucan.md
+python3 <skill-base-dir>/scripts/proposals.py <project-root> --grader-version v2.3
+python3 <skill-base-dir>/scripts/proposals.py <project-root> --failure-reason REFUSAL_CONTEXT
+
+# Validate all proposals for required metadata fields
+python3 <skill-base-dir>/scripts/proposals.py <project-root> --validate
+```
+
+Each proposal file must contain a `proposal_metadata:` block. See `reference/FORMAT_REFERENCE.md` → Schema Extensions for the full field reference.
 
 ---
 
