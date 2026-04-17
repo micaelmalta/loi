@@ -20,6 +20,7 @@ Checks:
     6. Room size limits (~150 entries max)
     7. (--changed-rooms) Only rooms touched by current git changes
     8. File/glob sanity: TASK rows referencing paths/globs that no longer resolve
+    9. Building folders with only 1 room file (promote to flat top-level instead)
 """
 
 import argparse
@@ -299,6 +300,14 @@ def validate(project_root: Path, changed_rooms_only: bool = False) -> Validation
             result.warn(
                 f"Building router {router.relative_to(project_root)} "
                 f"missing TASK → LOAD table"
+            )
+
+        # Check: a building with only 1 room file is a thin folder — promote to flat top-level file
+        room_files_in_sub = [f for f in sub.iterdir() if f.is_file() and f.suffix == ".md" and f.name != "_root.md"]
+        if len(room_files_in_sub) == 1:
+            result.warn(
+                f"Building {sub.name}/ has only 1 room file ({room_files_in_sub[0].name}). "
+                f"Promote it to a flat top-level file (docs/index/{room_files_in_sub[0].name}) and remove the folder."
             )
 
         referenced = extract_md_links(router)

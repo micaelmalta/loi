@@ -7,7 +7,7 @@ Every LOI entry (`# filename.ext`) should include only applicable fields from:
 | Field | When to Include | Example |
 |-------|-----------------|---------|
 | **DOES** | Always required | "Validates JWT tokens, extracts claims, stores in context" |
-| **SYMBOLS** | Files with exported functions/types | `GetUser(ctx, id string) → (User, error)` |
+| **SYMBOLS** | Files with functions/types (exported and unexported) | `GetUser(ctx, id string) → (User, error)` |
 | **TYPE** | Files defining struct/class types | `User { ID, Name, Email, CreatedAt }` |
 | **INTERFACE** | Files defining interface contracts | `Reader { Read() ([]byte, error) }` |
 | **ROUTES** | HTTP/gRPC handlers only | `GET /users/:id → GetUser` |
@@ -26,7 +26,7 @@ Every LOI entry (`# filename.ext`) should include only applicable fields from:
 ### Field Rules
 
 - **DOES**: Always present. Specific action/outcome, never generic. If a file implements a behavioral pattern (retry, backoff, circuit breaker), name the pattern and its key parameters.
-- **SYMBOLS**: Only exported/public functions and types. Include full signatures with params and return types. Never wrap in backticks — use plain text (e.g., `GetUser(ctx, id string) → (User, error)` not `` `GetUser(ctx, id string) → (User, error)` ``).
+- **SYMBOLS**: Include exported and unexported functions with full signatures and return types. Never wrap in backticks — use plain text (e.g., `GetUser(ctx, id string) → (User, error)` not `` `GetUser(ctx, id string) → (User, error)` ``). Do not list individual types, maps, or constants as separate bullets — group them (see Brevity Budget).
 - **DEPENDS**: Only list internal imports that represent meaningful cross-domain coupling. Skip standard library, same-package, and trivial utility imports. How to identify per language:
   - **Go**: `import` paths crossing `internal/` subdirectories (e.g., `internal/scan` importing `internal/audit`)
   - **Python**: relative or absolute imports from other top-level packages (e.g., `from guard.integrity_check import ...`)
@@ -35,6 +35,15 @@ Every LOI entry (`# filename.ext`) should include only applicable fields from:
 - **EMITS / CONSUMERS**: Use together to trace event flows across rooms. If a file both publishes and subscribes, include both fields. EMITS also covers: callback invocations that notify other subsystems, webhook dispatch, channel sends, and event bus publishes.
 - **PROPS / HOOKS**: Use for React/Vue/frontend components. PROPS lists the component's input contract (props/attributes). HOOKS lists custom hooks (React `useX()`) or composables (Vue `useX()`) that are either exported from or used within the file.
 - **USE WHEN**: Only add when multiple files could serve a similar purpose and the reader needs guidance to pick the right one.
+
+### Brevity Budget
+
+Every entry must be scannable at a glance. If you have to scroll to read one file's entry, it's too long.
+
+- **SYMBOLS: functions only.** List exported and unexported functions with full signatures. Do not list individual types, maps, or constants — group them: `Types: Paycheck, PaycheckEarningsItem (+9 more)`. If a file has many functions, list the most important and add a count line: `- (+N more helpers)`.
+- **DEPENDS cap: 4 per entry.** List the top 4 most meaningful cross-domain dependencies. If more exist, add `(+N more internal deps)`. For **same-repo** imports, use shortest path from source root (`internal/platform/vertex`, not `github.com/org/repo/internal/platform/vertex`). For **external-repo** imports, use the full module path (`github.com/org/other-repo/api/engine`).
+- **PATTERNS: name only.** No parenthetical explanations. The pattern name should be self-evident. Write `facade, strategy, builder` not `facade (X wraps Y), strategy (A vs B routing via flag)`.
+- **DOES: 1-2 sentences max.** Specific action/outcome, not a paragraph.
 
 ### Entry Ordering
 
@@ -225,9 +234,10 @@ USE WHEN: Any component needs current user state or login/logout actions
 - Bad: `GetUser`
 - Good: `GetUser(ctx context.Context, id string) → (User, error)`
 
-**SYMBOLS lists private/unexported functions:**
-- Bad: `parseToken(raw string) → (Claims, error)` (unexported helper)
-- Good: omit unexported functions — only list public API surface
+**SYMBOLS listing every type/map/constant individually:**
+- Bad: `Types: GeneratePaycheckRequest`, `GeneratePaycheckResponse`, `Paycheck`, `PaycheckEarningsItem`, ... (15 separate bullets)
+- Bad: `Maps: ShouldPassToVertex`, `PaymentTypeCompTypeMap`, `PaycheckEngineEarningPaymentTypeMap`
+- Good: `Types: GeneratePaycheckRequest, GeneratePaycheckResponse, Paycheck (+12 more)`
 
 **ROUTES missing HTTP method:**
 - Bad: `/users/:id → GetUser`
@@ -250,13 +260,30 @@ USE WHEN: Any component needs current user state or login/logout actions
 - Bad: `DEPENDS: utils/logger.go, utils/errors.go, utils/strings.go` (trivial utilities)
 - Good: `DEPENDS: persist/users.go, auth/jwt.go` — only meaningful cross-domain coupling
 
-**DEPENDS with module prefix:**
-- Bad: `DEPENDS: myapp/internal/audit, dep-registry/internal/scan`
-- Good: `DEPENDS: internal/audit, internal/scan` — shortest unambiguous path from source root
+**DEPENDS with full path for same-repo imports:**
+- Bad: `DEPENDS: github.com/org/repo/internal/platform/vertex` (same repo — drop the module prefix)
+- Good: `DEPENDS: internal/platform/vertex` — shortest path from source root for same-repo imports
+- Good: `DEPENDS: github.com/org/other-repo/api/engine` — full path is correct for external repos
+
+**DEPENDS listing everything:**
+- Bad: `DEPENDS: internal/vertex, internal/feature_flags, internal/logging, internal/helpers/messages, api/payroll, kit/errors, kit/date, kit/flags, kit/types, paycheck_engine/api`
+- Good: `DEPENDS: internal/vertex, api/payroll, paycheck_engine/api (+4 more)`
 
 **SYMBOLS with backticks:**
 - Bad: `` `GetUser(ctx, id string) → (User, error)` ``
 - Good: `GetUser(ctx, id string) → (User, error)` — plain text, no markdown formatting
+
+**SYMBOLS listing every type/map/constant:**
+- Bad: listing 15 types, 3 maps, and 5 constants as separate bullet points
+- Good: `Types: Paycheck, PaycheckEarningsItem, PaycheckDeductionItem (+9 more)`
+
+**TYPE as file category:**
+- Bad: `TYPE: generator` / `TYPE: calculator` / `TYPE: model`
+- Good: `TYPE: PaycheckGenerator { vertex.Server, pce engine.Client, publisher kitmessages.Client }` — TYPE is for struct/class definitions only. Omit TYPE entirely if the file doesn't define a notable struct.
+
+**PATTERNS with explanations:**
+- Bad: `PATTERNS: facade (PaycheckGenerator wraps Generation), strategy (PCE vs Vertex routing via feature flag)`
+- Good: `PATTERNS: facade, strategy, builder, template-method`
 
 **Splitting by alphabet:**
 - Bad: `models_a_to_m.md` / `models_n_to_z.md`
@@ -358,7 +385,7 @@ python3 skills/loi/scripts/proposals.py <project-root> --validate
 
 - [ ] Each entry has DOES (always required)
 - [ ] SYMBOLS include full signatures with params and return types
-- [ ] SYMBOLS only list exported/public functions
+- [ ] SYMBOLS include all functions (exported and unexported) with full signatures
 - [ ] No TYPE/INTERFACE/ROUTES/CONFIG/TABLE unless applicable
 - [ ] DEPENDS only lists meaningful cross-domain imports
 - [ ] EMITS and CONSUMERS used together to trace event flows
