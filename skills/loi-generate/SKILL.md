@@ -24,7 +24,7 @@ triggers:
 
 | Trigger / Keyword | Mode |
 |-------------------|------|
-| `/loi-generate`, `/loi generate`, "full loi", "full codebase index", "rebuild index" | **Full-Generate** |
+| `/loi-generate`, `/loi generate`, "generate loi", "full loi", "full codebase index", "rebuild index" | **Full-Generate** |
 | `/loi update`, "update loi", "refresh loi", "refresh index", "incremental update" | **Incremental-Generate** |
 | `/loi implement`, "implement loi changes", "sync intent to code" | **Implement** |
 | `/loi validate` | **Validate** |

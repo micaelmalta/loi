@@ -67,6 +67,7 @@ class TestMain:
         subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, capture_output=True)
 
         index_dir = tmp_path / "docs" / "index"
         index_dir.mkdir(parents=True)
