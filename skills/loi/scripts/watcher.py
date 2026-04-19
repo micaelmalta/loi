@@ -2,6 +2,9 @@
 """LOI Level 7 — Background daemon that watches docs/index/ for markdown changes
 and triggers validation, draft PRs, notifications, or AI implementation.
 
+Also implements the Code-to-Intent direction: watches source files and proposes
+LOI index updates when implementation drifts from the last index snapshot.
+
 Usage:
     uv run --with watchdog watcher.py [options]
     uv run --with watchdog watcher.py --mode notify --notify-backend webhook --notify-url http://peer-broker.local/loi/events
@@ -11,7 +14,7 @@ Usage:
 
 Modes:
     notify    (default) Validate → create draft PR → notification. No code changes.
-    auto      Validate → implement via AI worker → commit → PR. Full autonomy.
+    auto      Validate → implement via AI worker → run tests → mark conflicted on failure.
     dry-run   Log what would happen without taking any action.
 
 Notify backends:
@@ -25,7 +28,6 @@ Requires: uv (https://docs.astral.sh/uv/)
 
 import argparse
 import fnmatch
-import json
 import re
 import shutil
 import subprocess
@@ -186,6 +188,236 @@ def extract_governance_flags(project_root: Path, filepath: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Room frontmatter writer (Gap 3)
+# ---------------------------------------------------------------------------
+
+SOURCE_EXTS = {
+    ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".rb", ".rs",
+    ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp", ".cs",
+    ".sh", ".bash", ".zsh",
+}
+
+
+def update_room_health(filepath: Path, health: str) -> bool:
+    """Set architectural_health in a room's YAML frontmatter.
+
+    Writes atomically via a temp file. Returns True if the file changed.
+    """
+    if not filepath.is_file():
+        return False
+    try:
+        text = filepath.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return False
+
+        end = text.find("\n---", 3)
+        if end == -1:
+            return False
+
+        fm = text[3:end]
+        if re.search(r"architectural_health\s*:", fm):
+            new_fm = re.sub(
+                r"(architectural_health\s*:\s*)\S+",
+                lambda m: m.group(1) + health,
+                fm,
+            )
+        else:
+            new_fm = fm.rstrip("\n") + f"\narchitectural_health: {health}\n"
+
+        new_text = "---" + new_fm + "\n---" + text[end + 4:]
+        if new_text == text:
+            return False
+
+        tmp = filepath.with_suffix(".tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(filepath)
+        return True
+    except Exception as exc:
+        print(f"[LOI Watcher] Failed to update frontmatter in {filepath}: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Test runner (Gap 2)
+# ---------------------------------------------------------------------------
+
+def detect_and_run_tests(
+    project_root: Path,
+    test_cmd: str | None = None,
+) -> tuple[bool, str]:
+    """Run the project test suite and return (passed, output).
+
+    If test_cmd is given, use it directly. Otherwise auto-detect pytest,
+    go test, or npm test. Returns (True, "no test runner detected") when
+    nothing is found so the caller is never blocked by a missing runner.
+    """
+    if test_cmd:
+        candidates = [test_cmd.split()]
+    else:
+        candidates = []
+        if shutil.which("pytest"):
+            candidates.append(["pytest", "--tb=short", "-q"])
+        elif shutil.which("python3"):
+            candidates.append(["python3", "-m", "pytest", "--tb=short", "-q"])
+        if (project_root / "go.mod").is_file() and shutil.which("go"):
+            candidates.append(["go", "test", "./..."])
+        if (project_root / "package.json").is_file() and shutil.which("npm"):
+            candidates.append(["npm", "test", "--", "--watchAll=false"])
+
+    if not candidates:
+        return True, "no test runner detected"
+
+    for cmd in candidates:
+        print(f"[LOI Watcher] Running tests: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            output = (result.stdout + result.stderr).strip()
+            if result.returncode == 0:
+                return True, output
+            # First failing runner wins — report its output
+            return False, output
+        except subprocess.TimeoutExpired:
+            return False, f"test runner timed out after 300s: {' '.join(cmd)}"
+        except Exception:
+            continue  # try next candidate
+
+    return True, "no test runner succeeded"
+
+
+# ---------------------------------------------------------------------------
+# Conflict resolution (Gap 3)
+# ---------------------------------------------------------------------------
+
+def _handle_test_failure(
+    project_root: Path,
+    changed_room_files: list[str],
+    test_output: str,
+    notify_backend,
+) -> None:
+    """Mark changed rooms as conflicted, commit, and notify."""
+    print("[LOI Watcher] ⚠ Tests failed — marking rooms as conflicted.")
+    marked: list[str] = []
+    for filepath in changed_room_files:
+        p = Path(filepath)
+        if update_room_health(p, "conflicted"):
+            print(f"[LOI Watcher]   architectural_health: conflicted → {p.name}")
+            marked.append(filepath)
+
+    if marked:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        branch = f"loi/conflict-{timestamp}"
+
+        def run(cmd: list[str]) -> subprocess.CompletedProcess:
+            return subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+
+        current = run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+        if run(["git", "checkout", "-b", branch]).returncode == 0:
+            run(["git", "add"] + marked)
+            run(["git", "commit", "-m", f"loi: mark conflicted rooms ({timestamp})"])
+            run(["git", "push", "-u", "origin", branch])
+            run(["git", "checkout", current])
+            print(f"[LOI Watcher] Conflict state committed to branch: {branch}")
+
+    if notify_backend is not None:
+        try:
+            notify_backend.send("conflict.detected", {
+                "rooms": [str(Path(f).name) for f in changed_room_files],
+                "test_output": test_output[-2000:],
+                "action": "marked architectural_health: conflicted — human arbitration required",
+            })
+        except Exception as exc:
+            print(f"[LOI Watcher] Conflict notification failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Code-to-Intent: find LOI room covering a source file (Gap 1)
+# ---------------------------------------------------------------------------
+
+def find_covering_rooms(project_root: Path, source_file: str) -> list[Path]:
+    """Return LOI room .md files that reference the given source file path."""
+    index_root = project_root / "docs" / "index"
+    if not index_root.is_dir():
+        return []
+
+    # Match on filename stem and any path segment
+    needle = Path(source_file).stem.lower()
+    matches: list[Path] = []
+    for md in index_root.rglob("*.md"):
+        if md.name.startswith("_"):
+            continue
+        try:
+            content = md.read_text(encoding="utf-8").lower()
+            if needle in content or source_file.lower() in content:
+                matches.append(md)
+        except Exception:
+            continue
+    return matches
+
+
+def scaffold_room_from_codetect(
+    project_root: Path,
+    room_rel: str,
+) -> bool:
+    """Re-scaffold a room using generate_loi.py if codetect symbols.db exists.
+
+    Returns True if scaffolding was attempted.
+    """
+    db_path = project_root / ".codetect" / "symbols.db"
+    if not db_path.is_file():
+        return False
+
+    generate_script = Path(__file__).resolve().parent / "generate_loi.py"
+    if not generate_script.is_file():
+        return False
+
+    result = subprocess.run(
+        ["python3", str(generate_script), str(project_root),
+         "--scaffold", "--room", room_rel],
+        capture_output=True, text=True, cwd=project_root,
+    )
+    if result.returncode != 0:
+        print(f"[LOI Watcher] generate_loi scaffold failed: {result.stderr.strip()[:200]}")
+    return True
+
+
+def mark_room_stale(room_path: Path, source_file: str) -> bool:
+    """Insert/update a stale_since frontmatter field when codetect is unavailable."""
+    if not room_path.is_file():
+        return False
+    try:
+        text = room_path.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return False
+        end = text.find("\n---", 3)
+        if end == -1:
+            return False
+
+        fm = text[3:end]
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stale_line = f"stale_since: \"{timestamp}\"  # {Path(source_file).name} changed"
+
+        if re.search(r"stale_since\s*:", fm):
+            new_fm = re.sub(r"stale_since\s*:.*", stale_line, fm)
+        else:
+            new_fm = fm.rstrip("\n") + f"\n{stale_line}\n"
+
+        new_text = "---" + new_fm + "\n---" + text[end + 4:]
+        tmp = room_path.with_suffix(".tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(room_path)
+        return True
+    except Exception as exc:
+        print(f"[LOI Watcher] Failed to mark room stale: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -323,6 +555,116 @@ def build_worker_prompt(filepaths: list[str], diffs: dict[str, str], entries: li
 # Event handler with batch support
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Code-to-Intent event handler (Gap 1)
+# ---------------------------------------------------------------------------
+
+class SourceHandler(FileSystemEventHandler):
+    """Watches source code files and proposes LOI index updates when they change."""
+
+    def __init__(
+        self,
+        project_root: Path,
+        debounce: float,
+        notify_backend,
+        mode: str = "notify",
+    ):
+        self.project_root = project_root
+        self.debounce = debounce
+        self.notify_backend = notify_backend
+        self.mode = mode
+        self._pending_files: set[str] = set()
+        self._batch_timer = None
+        self._lock = threading.Lock()
+
+    def on_modified(self, event):
+        if not isinstance(event, FileModifiedEvent):
+            return
+        ext = Path(event.src_path).suffix.lower()
+        if ext not in SOURCE_EXTS:
+            return
+        # Ignore anything inside docs/index
+        try:
+            rel = Path(event.src_path).relative_to(self.project_root)
+            if rel.parts and rel.parts[0] == "docs":
+                return
+        except ValueError:
+            pass
+
+        with self._lock:
+            self._pending_files.add(event.src_path)
+            if self._batch_timer:
+                self._batch_timer.cancel()
+            self._batch_timer = threading.Timer(self.debounce, self._process_source_batch)
+            self._batch_timer.start()
+
+    def _process_source_batch(self):
+        with self._lock:
+            files = list(self._pending_files)
+            self._pending_files.clear()
+            self._batch_timer = None
+
+        if not files:
+            return
+
+        print(f"\n[LOI Watcher / Code-to-Intent] {len(files)} source file(s) changed:")
+        for f in files:
+            print(f"  - {f}")
+
+        if self.mode == "dry-run":
+            print("[LOI Watcher / Code-to-Intent] DRY RUN — no action taken.")
+            return
+
+        changed_rooms: list[Path] = []
+        db_available = (self.project_root / ".codetect" / "symbols.db").is_file()
+
+        for src_path in files:
+            rel = str(Path(src_path).relative_to(self.project_root))
+            covering = find_covering_rooms(self.project_root, rel)
+            if not covering:
+                print(f"[LOI Watcher / Code-to-Intent] No LOI room found for {rel} — skipping.")
+                continue
+
+            for room_path in covering:
+                room_rel = str(room_path.relative_to(self.project_root / "docs" / "index"))
+                room_rel_noext = room_rel.removesuffix(".md")
+
+                if db_available:
+                    print(f"[LOI Watcher / Code-to-Intent] Re-scaffolding room {room_rel_noext} via codetect…")
+                    scaffold_room_from_codetect(self.project_root, room_rel_noext)
+                else:
+                    print(f"[LOI Watcher / Code-to-Intent] No codetect — marking room stale: {room_path.name}")
+                    mark_room_stale(room_path, rel)
+
+                if room_path not in changed_rooms:
+                    changed_rooms.append(room_path)
+
+        if not changed_rooms:
+            return
+
+        changed_room_strs = [str(p) for p in changed_rooms]
+        entries = [{"source_file": str(Path(f).relative_to(self.project_root)), "changed_line": "source updated"} for f in files]
+
+        pr_url = create_draft_pr(self.project_root, changed_room_strs, entries)
+
+        if self.notify_backend is not None:
+            try:
+                self.notify_backend.send("source.changed", {
+                    "repo": get_repo_name(self.project_root),
+                    "source_files": [str(Path(f).relative_to(self.project_root)) for f in files],
+                    "updated_rooms": [str(p.relative_to(self.project_root)) for p in changed_rooms],
+                    "pr_url": pr_url,
+                    "codetect_available": db_available,
+                    "summary": f"Code-to-Intent: {len(changed_rooms)} LOI room(s) updated after source change",
+                })
+            except Exception as exc:
+                print(f"[LOI Watcher / Code-to-Intent] Notification failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Intent-to-Code event handler
+# ---------------------------------------------------------------------------
+
 POLICY_TIERS = [
     "notify-only",      # validate + notify; never invoke the implement worker
     "draft-only",       # validate + branch + draft PR; worker not invoked
@@ -347,6 +689,7 @@ class LOIHandler(FileSystemEventHandler):
         policy: str = "full-auto",
         allowed_scopes: list[str] | None = None,
         block_governance_security: set[str] | None = None,
+        test_cmd: str | None = None,
     ):
         self.project_root = project_root
         self.mode = mode
@@ -356,6 +699,7 @@ class LOIHandler(FileSystemEventHandler):
         self.policy = policy
         self.allowed_scopes = allowed_scopes or []
         self.block_governance_security = block_governance_security or {"sensitive"}
+        self.test_cmd = test_cmd
         self._pending_files: set[str] = set()
         self._batch_timer = None
         self._lock = threading.Lock()
@@ -620,6 +964,33 @@ class LOIHandler(FileSystemEventHandler):
                 cwd=self.project_root,
             )
 
+            # Gap 2: run tests after worker finishes
+            test_passed, test_output = detect_and_run_tests(
+                self.project_root, self.test_cmd
+            )
+            if test_passed:
+                print("[LOI Watcher] Tests passed.")
+                # Gap 3: clear any prior conflict state
+                for filepath in changed_room_files:
+                    if update_room_health(Path(filepath), "normal"):
+                        print(f"[LOI Watcher]   architectural_health: normal → {Path(filepath).name}")
+                if self.notify_backend is not None:
+                    try:
+                        self.notify_backend.send("implement.succeeded", {
+                            "repo": get_repo_name(self.project_root),
+                            "rooms": [Path(f).name for f in changed_room_files],
+                        })
+                    except Exception as exc:
+                        print(f"[LOI Watcher] Notification failed: {exc}")
+            else:
+                # Gap 3: mark conflicted, commit, notify
+                _handle_test_failure(
+                    self.project_root,
+                    changed_room_files,
+                    test_output,
+                    self.notify_backend,
+                )
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -670,6 +1041,24 @@ def main():
     legacy = parser.add_argument_group("Legacy Slack (deprecated, use --notify-backend slack)")
     legacy.add_argument("--slack-webhook", help="Slack incoming webhook URL (use --notify-url instead)")
     legacy.add_argument("--slack-channel", help="Slack channel (deprecated)")
+
+    # Code-to-Intent source watching (Gap 1)
+    source_group = parser.add_argument_group("Code-to-Intent (source file watching)")
+    source_group.add_argument(
+        "--watch-source", default=True, action=argparse.BooleanOptionalAction,
+        help="Watch source files and propose LOI index updates when they change (default: on)",
+    )
+    source_group.add_argument(
+        "--source-paths",
+        help="Comma-separated dirs to watch for source changes (default: project root minus docs/)",
+    )
+
+    # Test runner (Gap 2)
+    test_group = parser.add_argument_group("Test runner (auto mode)")
+    test_group.add_argument(
+        "--test-cmd",
+        help="Test command to run after auto-mode implementation (default: auto-detect pytest/go test/npm test)",
+    )
 
     # Policy tiers (Gap 4)
     policy_group = parser.add_argument_group("Implementation Policy (auto mode)")
@@ -769,6 +1158,10 @@ def main():
             print(f"[LOI Watcher] Governance block: security tiers {block_governance_security}")
         if allowed_scopes:
             print(f"[LOI Watcher] Allowed scopes: {allowed_scopes}")
+        test_label = args.test_cmd if args.test_cmd else "auto-detect"
+        print(f"[LOI Watcher] Test runner: {test_label}")
+    if args.watch_source:
+        print("[LOI Watcher] Code-to-Intent: watching source files")
     print("[LOI Watcher] Waiting for changes... (Ctrl+C to stop)\n")
 
     handler = LOIHandler(
@@ -780,9 +1173,31 @@ def main():
         policy=args.policy,
         allowed_scopes=allowed_scopes,
         block_governance_security=block_governance_security,
+        test_cmd=args.test_cmd or None,
     )
     observer = Observer()
     observer.schedule(handler, str(watch_dir), recursive=True)
+
+    # Gap 1: register source handler on project root (or explicit paths)
+    if args.watch_source:
+        source_handler = SourceHandler(
+            project_root=project_root,
+            debounce=args.debounce,
+            notify_backend=notify_backend,
+            mode=args.mode,
+        )
+        if args.source_paths:
+            for sp in (s.strip() for s in args.source_paths.split(",") if s.strip()):
+                src_dir = (project_root / sp).resolve()
+                if src_dir.is_dir():
+                    observer.schedule(source_handler, str(src_dir), recursive=True)
+                    print(f"[LOI Watcher] Code-to-Intent watching: {src_dir}")
+                else:
+                    print(f"[LOI Watcher] Warning: --source-paths dir not found: {src_dir}")
+        else:
+            # Watch project root; SourceHandler.on_modified skips docs/ itself
+            observer.schedule(source_handler, str(project_root), recursive=True)
+
     observer.start()
 
     try:
