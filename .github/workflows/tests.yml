@@ -4,34 +4,36 @@ on:
   push:
     branches: [main]
     paths:
-      - "skills/loi/scripts/**"
-      - "skills/loi/tests/**"
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
   pull_request:
     paths:
-      - "skills/loi/scripts/**"
-      - "skills/loi/tests/**"
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  pytest:
-    name: pytest (Python ${{ matrix.python-version }})
+  go-test:
+    name: go test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12", "3.14"]
+        go-version: ["1.22", "1.23"]
       fail-fast: false
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install pytest
-        run: pip install pytest
+          go-version: ${{ matrix.go-version }}
 
       - name: Run tests
-        run: python -m pytest skills/loi/tests/ -v --tb=short
+        run: go test ./... -v -race
+
+      - name: Build binary
+        run: go build -o loi .

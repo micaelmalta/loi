@@ -290,26 +290,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: "3.12"
+          go-version: "1.22"
+
+      - name: Build loi binary
+        run: go build -o /usr/local/bin/loi .
 
       - name: Run governance check
         id: gov
         run: |
-          python3 skills/loi/scripts/governance.py . --format json > /tmp/gov.json 2>/dev/null \
+          loi governance . --format json > /tmp/gov.json 2>/dev/null \
             || echo "[]" > /tmp/gov.json
 
-          python3 - <<'PYEOF'
-          import json, os
-          data = json.load(open('/tmp/gov.json'))
-          n = sum(1 for e in data
-                  if e.get('health') == 'critical' or e.get('security') == 'sensitive')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'critical_count={n}\n')
-          PYEOF
+          node -e "
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('/tmp/gov.json', 'utf8'));
+            const n = data.filter(e => e.health === 'critical' || e.security === 'sensitive').length;
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'critical_count=' + n + '\n');
+          "
 
-          python3 skills/loi/scripts/governance.py . --verbose > /tmp/gov_verbose.txt 2>&1 \
+          loi governance . --verbose > /tmp/gov_verbose.txt 2>&1 \
             || echo "(no LOI index found)" > /tmp/gov_verbose.txt
 
       - name: Post governance comment
