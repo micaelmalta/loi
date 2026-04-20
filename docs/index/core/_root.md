@@ -7,7 +7,7 @@ security_tier: sensitive
 # Core
 
 Subdomain: core/
-Source paths: internal/index/, internal/claims/, internal/notify/
+Source paths: internal/index/, internal/claims/, internal/notify/, internal/datadog/
 
 ## TASK → LOAD
 
@@ -23,6 +23,9 @@ Source paths: internal/index/, internal/claims/, internal/notify/
 | Send a notification event (Slack, webhook, file, stdout) | notify.md |
 | Add or change a notification backend | notify.md |
 | Format Slack Block Kit message from a NotifyEvent | notify.md |
+| Poll a Datadog metric and fire alert callbacks | datadog.md |
+| Map a Datadog scope tag to LOI rooms | datadog.md |
+| Modify alert threshold evaluation or retry/backoff logic | datadog.md |
 
 ## Rooms
 
@@ -31,6 +34,7 @@ Source paths: internal/index/, internal/claims/, internal/notify/
 | index.md | internal/index/ | 6 |
 | claims.md | internal/claims/ | 6 |
 | notify.md | internal/notify/ | 5 |
+| datadog.md | internal/datadog/ | 2 |
 
 ## See Also (flat rooms)
 
