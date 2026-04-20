@@ -149,10 +149,14 @@ func onDatadogAlert(series datadog.Series, rooms []string, backend notify.Notify
 	// Create draft PR.
 	branch := fmt.Sprintf("loi/datadog-alert-%s-%s", metricSlug, ts.Format("20060102-150405"))
 	var prURL string
-	if err := git.CheckoutNewBranch(projectRoot, branch); err == nil {
+	if err := git.CheckoutNewBranch(projectRoot, branch); err != nil {
+		fmt.Fprintf(os.Stderr, "datadog-watch: checkout branch %q: %v\n", branch, err)
+	} else {
 		files := []string{proposalPath}
 		msg := fmt.Sprintf("loi: datadog alert — %s breached threshold (value: %g)", series.Metric, series.LastValue)
-		if err := git.AddAndCommit(projectRoot, files, msg); err == nil {
+		if err := git.AddAndCommit(projectRoot, files, msg); err != nil {
+			fmt.Fprintf(os.Stderr, "datadog-watch: commit alert files: %v\n", err)
+		} else {
 			prURL, _ = git.CreatePR(projectRoot, branch,
 				fmt.Sprintf("LOI: Datadog alert — %s", series.Metric),
 				buildAlertPRBody(series, rooms, ts),
@@ -222,7 +226,9 @@ reflect it and consider opening a `+"`loi implement`"+` run.
 		series.LastValue,
 	)
 
-	os.WriteFile(path, []byte(content), 0o644)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "datadog-watch: failed to write proposal: %v\n", err)
+	}
 	return path
 }
 
@@ -263,6 +269,9 @@ Keep the response concise. Do not modify any files directly.`,
 		proposalPath, roomList)
 
 	args := strings.Fields(workerCmd)
+	if len(args) == 0 {
+		return
+	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = projectRoot
 	cmd.Stdin = bytes.NewBufferString(prompt)

@@ -84,10 +84,12 @@ func (c *Client) QueryLastValues(ctx context.Context, query string, window time.
 		case status == http.StatusForbidden:
 			return nil, ErrAuthFailure
 		case status == http.StatusTooManyRequests:
+			t := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
+				t.Stop()
 				return nil, ctx.Err()
-			case <-time.After(backoff):
+			case <-t.C:
 			}
 			backoff *= 2
 			if backoff > 60*time.Second {
