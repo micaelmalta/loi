@@ -1,18 +1,7 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
-.mypy_cache/
-.pytest_cache/
-*.egg-info/
-
-# uv
-uv.lock
-.python-version
-skills/loi/scripts/pyproject.toml
-skills/loi/scripts/README.md
+# Go
+/loi
+/loi-*
+*.test
 
 # OS
 .DS_Store
@@ -28,6 +17,7 @@ Thumbs.db
 # Temp
 /tmp/
 *.log
+
 # LOI runtime state (ephemeral, never commit)
 .loi-claims.json
 .loi-claims.json.lock
