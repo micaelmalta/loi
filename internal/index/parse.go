@@ -476,7 +476,9 @@ func FindSourceDirs(root string, excluded map[string]bool) ([]string, error) {
 				return nil
 			}
 			if rel == "." {
-				rel = ""
+				// Skip root-level source files (e.g. main.go); they have no
+				// meaningful directory prefix to declare in Source paths:.
+				return nil
 			}
 			seen[rel] = true
 		}
