@@ -21,3 +21,6 @@ Thumbs.db
 # LOI runtime state (ephemeral, never commit)
 .loi-claims.json
 .loi-claims.json.lock
+
+# codetect index
+.codetect/
