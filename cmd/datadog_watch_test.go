@@ -46,6 +46,33 @@ func TestDatadogWatch_missingThreshold_exits1(t *testing.T) {
 	}
 }
 
+func TestDatadogWatch_workerCmdDefault_isClaude(t *testing.T) {
+	// Verify the --worker-cmd flag defaults to "claude" by checking help output.
+	cmd := exec.Command(loiBin, "datadog-watch", "--help")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("--help: %v", err)
+	}
+	if !strings.Contains(string(out), "claude") {
+		t.Errorf("expected 'claude' in --worker-cmd help text; got:\n%s", out)
+	}
+}
+
+func TestDatadogWatch_workerCmdEmpty_skipsWorker(t *testing.T) {
+	// --worker-cmd="" should be accepted (skips worker invocation).
+	root := initGitRepo(t)
+	cmd := exec.Command(loiBin, "datadog-watch",
+		"--query", "avg:cpu{*}", "--threshold", "80", "--worker-cmd", "")
+	cmd.Dir = root
+	cmd.Env = envWithout(os.Environ(), "DD_API_KEY", "DD_APPLICATION_KEY")
+	// Still exits 1 due to missing credentials — that's fine, we just verify
+	// the flag is accepted without a parse error.
+	out, _ := cmd.CombinedOutput()
+	if strings.Contains(string(out), "unknown flag") {
+		t.Errorf("--worker-cmd flag not recognised: %s", out)
+	}
+}
+
 // envWithout returns a copy of env with all entries whose key matches any of
 // the given keys removed.
 func envWithout(env []string, keys ...string) []string {

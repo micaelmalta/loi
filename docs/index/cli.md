@@ -148,10 +148,11 @@ USE WHEN: Validating pattern semantics; for structural room integrity use valida
 
 # datadog_watch.go
 
-DOES: Implements `loi datadog-watch --query <expr> --threshold <n> [--operator] [--interval] [--dry-run] [--notify-backend ...]`, reading DD_API_KEY and DD_APPLICATION_KEY from env, constructing a `datadog.PollConfig`, and delegating to `datadog.Poll`. On alert: writes a proposal file to `docs/index/proposals/`, creates a draft PR via git, and sends a `datadog.alert` notify event. `--dry-run` prints alert details without git/notify ops.
+DOES: Implements `loi datadog-watch --query <expr> --threshold <n> [--operator] [--interval] [--worker-cmd claude] [--dry-run] [--notify-backend ...]`, reading DD_API_KEY and DD_APPLICATION_KEY from env, constructing a `datadog.PollConfig`, and delegating to `datadog.Poll`. On alert: writes a proposal file, pipes a focused intent-review prompt to `--worker-cmd` (default `claude`) via stdin, creates a draft PR, and sends a `datadog.alert` notify event. `--dry-run` prints alert details without git/notify/LLM ops.
 SYMBOLS:
 - runDatadogWatch(cmd *cobra.Command, args []string) error
 - onDatadogAlert(series datadog.Series, rooms []string, backend notify.NotifyBackend)
+- runAlertWorker(workerCmd string, series datadog.Series, rooms []string, proposalPath string)
 - writeProposal(ts time.Time, metricSlug string, series datadog.Series, targetRoom string) string
 - buildAlertPRBody(series datadog.Series, rooms []string, ts time.Time) string
 DEPENDS: internal/datadog, internal/git, internal/notify
