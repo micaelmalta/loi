@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# LOI pre-push hook — validates changed rooms and checks governance flags.
+# Installed by: loi setup-hook --mode pre-push
+set -euo pipefail
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+GOVERNANCE_BLOCK="${LOI_GOVERNANCE_BLOCK:-1}"
+
+if ! command -v loi &>/dev/null; then
+  echo "[LOI pre-push] 'loi' binary not found in PATH — skipping." >&2
+  exit 0
+fi
+
+CHANGED=$(git diff --name-only HEAD @{u} 2>/dev/null | grep '^docs/index/' || true)
+if [[ -z "$CHANGED" ]]; then exit 0; fi
+
+echo "[LOI pre-push] Index files changed — running validation..."
+loi validate --changed-rooms || { echo "[LOI pre-push] Validation failed." >&2; exit 1; }
+echo "[LOI pre-push] Validation passed."
+
+if [[ "$GOVERNANCE_BLOCK" = "1" ]]; then
+  GOV_JSON=$(loi governance --format json "$PROJECT_ROOT" 2>/dev/null || echo "[]")
+  CRITICAL=$(echo "$GOV_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for e in d if e.get('health')=='critical' or e.get('security')=='sensitive'))" 2>/dev/null || echo "0")
+  if [[ "$CRITICAL" -gt 0 ]]; then
+    loi governance "$PROJECT_ROOT" --verbose >&2
+    echo "[LOI pre-push] Push blocked: ${CRITICAL} critical/sensitive flag(s)." >&2
+    exit 1
+  fi
+fi
+echo "[LOI pre-push] All checks passed."
+exit 0

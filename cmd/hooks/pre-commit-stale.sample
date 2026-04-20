@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# LOI pre-commit stale index check
+# Installed by: loi setup-hook --mode pre-commit-stale
+set -euo pipefail
+if ! command -v loi &>/dev/null; then exit 0; fi
+exec loi check-stale
