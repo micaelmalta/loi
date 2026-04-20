@@ -7,10 +7,29 @@ import (
 	"strings"
 )
 
-// run executes the given command in dir and returns trimmed stdout. If the
+// Runner executes shell commands. Swapped out in tests to avoid real git calls.
+type Runner func(dir string, args ...string) (string, error)
+
+// activeRunner is the package-level runner; replaced by SetRunner in tests.
+var activeRunner Runner = defaultRun
+
+// SetRunner replaces the active runner and returns a restore function.
+// Usage: defer git.SetRunner(fakeRunner)()
+func SetRunner(r Runner) func() {
+	prev := activeRunner
+	activeRunner = r
+	return func() { activeRunner = prev }
+}
+
+// run delegates to the active runner.
+func run(dir string, args ...string) (string, error) {
+	return activeRunner(dir, args...)
+}
+
+// defaultRun executes the given command in dir and returns trimmed stdout. If the
 // command fails the error message includes both the original error and any
 // output written to stderr.
-func run(dir string, args ...string) (string, error) {
+func defaultRun(dir string, args ...string) (string, error) {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = dir
 	out, err := cmd.Output()

@@ -628,11 +628,12 @@ func computeGovernanceInfo(rooms []string) map[string]string {
 }
 
 // mostSevereHealth returns the more severe of two health strings.
-// critical > conflicted > degraded > normal > ""
+// critical > conflicted > warning > degraded > normal > ""
 func mostSevereHealth(a, b string) string {
 	order := map[string]int{
-		"critical":   4,
-		"conflicted": 3,
+		"critical":   5,
+		"conflicted": 4,
+		"warning":    3,
 		"degraded":   2,
 		"normal":     1,
 		"":           0,
