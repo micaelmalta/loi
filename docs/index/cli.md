@@ -4,10 +4,11 @@ see_also:
   - core/index.md
   - core/claims.md
   - core/notify.md
+  - core/datadog.md
   - runtime.md
 architectural_health: normal
 security_tier: normal
-hot_paths: generate.go, validate.go, watch.go
+hot_paths: generate.go, validate.go, watch.go, datadog_watch.go
 ---
 
 # LOI Room: cli
@@ -142,6 +143,21 @@ SYMBOLS:
 DEPENDS: internal/index
 PATTERNS: cobra-command, semantic-validation
 USE WHEN: Validating pattern semantics; for structural room integrity use validate.go.
+
+---
+
+# datadog_watch.go
+
+DOES: Implements `loi datadog-watch --query <expr> --threshold <n> [--operator] [--interval] [--worker-cmd claude] [--dry-run] [--notify-backend ...]`, reading DD_API_KEY and DD_APPLICATION_KEY from env, constructing a `datadog.PollConfig`, and delegating to `datadog.Poll`. On alert: writes a proposal file, pipes a focused intent-review prompt to `--worker-cmd` (default `claude`) via stdin, creates a draft PR, and sends a `datadog.alert` notify event. `--dry-run` prints alert details without git/notify/LLM ops.
+SYMBOLS:
+- runDatadogWatch(cmd *cobra.Command, args []string) error
+- onDatadogAlert(series datadog.Series, rooms []string, backend notify.NotifyBackend)
+- runAlertWorker(workerCmd string, series datadog.Series, rooms []string, proposalPath string)
+- writeProposal(ts time.Time, metricSlug string, series datadog.Series, targetRoom string) string
+- buildAlertPRBody(series datadog.Series, rooms []string, ts time.Time) string
+DEPENDS: internal/datadog, internal/git, internal/notify
+PATTERNS: cobra-command, delegation, proposal-lifecycle
+USE WHEN: Modifying Datadog alert behaviour, proposal file format, or PR creation logic; polling core lives in internal/datadog.
 
 ---
 

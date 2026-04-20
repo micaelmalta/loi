@@ -25,6 +25,8 @@ Source paths: cmd/, internal/, main.go, skills/loi/, .github/workflows/, README.
 | Query or validate AI-generated proposal provenance | loi/automation.md |
 | Run LOI script test suite | loi/automation.md |
 | Add or modify a CLI subcommand (loi generate, validate, watch, etc.) | cli.md |
+| Poll a Datadog metric and fire LOI intent alerts | core/_root.md |
+| Set up Level 8 telemetry-driven intent review | cli.md |
 | Modify LOI scaffold generation from codetect symbols | cli.md |
 | Modify validation rules or exit codes | cli.md |
 | Modify watch daemon flags or startup logic | cli.md |
@@ -54,6 +56,8 @@ Cross-cutting behavioral patterns that span multiple rooms.
 | Cobra command registration | cli.md |
 | LOI scaffold generation from codetect | cli.md, runtime.md |
 | Intent-to-code / code-to-intent bidirectional sync | runtime.md |
+| Exponential backoff / retry on rate limits | core/datadog.md |
+| Telemetry-to-intent alert pipeline | cli.md, core/datadog.md |
 
 ## 🚨 GOVERNANCE WATCHLIST
 
@@ -70,5 +74,5 @@ Rooms flagged by the RLM Committee for architectural drift or security audits.
 |-----------|-------------|-------|
 | loi/ | LOI skill definition, concept docs, and automation tooling | concept.md, skill.md, automation.md |
 | cli.md | Cobra CLI layer — all `loi` subcommands | (flat file) |
-| core/ | Index parsing, claims coordination, notification backends | index.md, claims.md, notify.md |
+| core/ | Index parsing, claims coordination, notification backends, Datadog poller | index.md, claims.md, notify.md, datadog.md |
 | runtime.md | Flat: file watcher, git ops, test detection, codetect symbols | (flat file) |
