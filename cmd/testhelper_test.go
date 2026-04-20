@@ -16,8 +16,8 @@ func TestMain(m *testing.M) {
 	// Build the loi binary into a temp dir.
 	bin, err := buildBinary()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "SKIP: could not build loi binary: %v\n", err)
-		os.Exit(0) // skip all tests gracefully
+		fmt.Fprintf(os.Stderr, "ERROR: could not build loi binary: %v\n", err)
+		os.Exit(1)
 	}
 	loiBin = bin
 	defer os.Remove(bin)

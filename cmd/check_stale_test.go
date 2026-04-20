@@ -52,10 +52,6 @@ func TestCheckStale_LOI_STALE_BLOCK_0_exits0(t *testing.T) {
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "LOI_STALE_BLOCK=0")
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if exitErr.ExitCode() != 0 {
-				t.Errorf("expected exit 0 with LOI_STALE_BLOCK=0, got %d", exitErr.ExitCode())
-			}
-		}
+		t.Errorf("expected exit 0 with LOI_STALE_BLOCK=0, got error: %v", err)
 	}
 }

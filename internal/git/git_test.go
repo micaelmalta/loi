@@ -25,10 +25,10 @@ func TestSetRunner_restoresDefault(t *testing.T) {
 	if activeRunner == nil {
 		t.Error("activeRunner should not be nil after restore")
 	}
-	// After restore the active runner should be non-nil (defaultRun).
+	// After restore the stub should no longer be called.
 	called = false
-	if activeRunner == nil {
-		t.Error("activeRunner should not be nil after restore")
+	RepoName(".")
+	if called {
+		t.Error("expected stub runner NOT to be called after restore")
 	}
-	_ = called
 }

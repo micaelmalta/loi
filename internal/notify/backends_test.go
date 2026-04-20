@@ -93,16 +93,12 @@ func TestFileBackend_Send(t *testing.T) {
 	}
 }
 
-func TestFileBackend_CreatesParentDir_rejectsOnMissingParent(t *testing.T) {
-	// newFileBackend should fail if the parent dir doesn't exist and can't be
-	// created (we just verify it returns an error rather than panicking).
+func TestFileBackend_RejectsOnMissingParent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nonexistent", "subdir", "events.jsonl")
 	_, err := newFileBackend(path)
-	// The file backend does NOT auto-create nested parents; it returns an error.
 	if err == nil {
-		t.Log("platform created parent dirs automatically — skipping assertion")
+		t.Error("expected error when parent directory does not exist")
 	}
-	// Either outcome is acceptable; this test just verifies no panic.
 }
 
 // ---- webhookBackend ---------------------------------------------------------
