@@ -22,7 +22,7 @@ The index has three levels:
 
 Each entry answers *what does this code do?* via `DOES`, `SYMBOLS`, `PATTERNS`, and other fields. Navigation is always three reads regardless of codebase size.
 
-The generated index lives in your target repo under `docs/index/`. This repo contains only the skill definition, format reference, and tooling.
+The generated index lives in your target repo under `docs/index/`. This repo contains the skill definitions, format reference, and the `loi` CLI binary.
 
 ---
 
@@ -44,6 +44,44 @@ After installation, say `"generate loi"`, `"update loi"`, or `"navigate codebase
 
 ---
 
+## The `loi` binary
+
+All operations are available as a single self-contained binary — no Python, no runtime dependency.
+
+**Build from source:**
+
+```bash
+go build -o loi .
+# Cross-compile for Linux arm64 (Raspberry Pi, etc.)
+GOOS=linux GOARCH=arm64 go build -o loi-arm64 .
+```
+
+**Install to PATH:**
+
+```bash
+go install github.com/micaelmalta/loi@latest
+```
+
+```
+loi validate              Validate index structure and source coverage
+loi validate-patterns     Check PATTERN table entries are grounded in target rooms
+loi generate              Scaffold room files from codetect symbols.db
+loi governance            Aggregate GOVERNANCE WATCHLIST across repos
+loi proposals             Query and validate AI-generated proposal metadata
+loi diff-tables           Row-level diff for TASK/PATTERN/GOVERNANCE tables
+loi claim                 Claim a room with an intent before editing
+loi heartbeat             Extend an active claim's TTL
+loi release               Release a room claim
+loi status                Show active claims and summaries for a room
+loi summary               Publish a work summary for a room
+loi claims                List all active claims
+loi setup-hook            Install git hooks into a target repo
+loi check-stale           Pre-commit: warn when staged source has stale LOI coverage
+loi watch                 Background daemon: watch for changes and react
+```
+
+---
+
 ## Quick start
 
 In your AI agent (Claude Code, Cursor):
@@ -53,14 +91,17 @@ In your AI agent (Claude Code, Cursor):
 /loi update        # refresh stale rooms after code changes
 ```
 
-In your shell (`<skill-root>` = `~/.claude/skills/loi` for Claude Code):
+In your shell:
 
 ```bash
 # Validate the index
-python3 <skill-root>/scripts/validate_loi.py .
+loi validate
 
-# Install the pre-push validation hook
-python3 <skill-root>/scripts/setup_hook.py .
+# Validate only rooms changed in the current git diff
+loi validate --changed-rooms
+
+# Install git hooks into the current repo
+loi setup-hook
 ```
 
 ---
@@ -69,41 +110,48 @@ python3 <skill-root>/scripts/setup_hook.py .
 
 | Path | Purpose |
 |------|---------|
-| [`skills/loi/SKILL.md`](skills/loi/SKILL.md) | Full skill: all modes, commands, and format rules |
+| [`skills/loi/SKILL.md`](skills/loi/SKILL.md) | Navigation skill: Campus → Building → Room, symbol disambiguation |
+| [`skills/loi-generate/SKILL.md`](skills/loi-generate/SKILL.md) | Generation skill: full index, incremental update, implement, validate |
 | [`skills/loi/reference/FORMAT_REFERENCE.md`](skills/loi/reference/FORMAT_REFERENCE.md) | Field guide and schema extensions |
-| [`skills/loi/scripts/validate_loi.py`](skills/loi/scripts/validate_loi.py) | Validates index structure and source coverage (`--changed-rooms`, `--ci`) |
-| [`skills/loi/scripts/setup_hook.py`](skills/loi/scripts/setup_hook.py) | Installs pre-push validation hook into a target repo |
-| [`skills/loi/scripts/validate_patterns.py`](skills/loi/scripts/validate_patterns.py) | Checks PATTERN table entries are semantically grounded in target rooms |
-| [`skills/loi/scripts/diff_tables.py`](skills/loi/scripts/diff_tables.py) | Row-level diff for TASK / PATTERN / GOVERNANCE tables |
-| [`skills/loi/scripts/governance.py`](skills/loi/scripts/governance.py) | Aggregates GOVERNANCE WATCHLIST entries across repos, sorted by severity |
-| [`skills/loi/scripts/runtime.py`](skills/loi/scripts/runtime.py) | Advisory room claims (`claim`, `heartbeat`, `release`, `status`, `summary`) |
-| [`skills/loi/scripts/proposals.py`](skills/loi/scripts/proposals.py) | Queries and validates AI-generated proposal provenance metadata |
-| [`skills/loi/scripts/backends/`](skills/loi/scripts/backends/) | Pluggable notify backends: `stdout`, `file`, `webhook`, `slack` |
-| [`skills/loi/scripts/watcher.py`](skills/loi/scripts/watcher.py) | Background daemon — watches `docs/index/` and triggers implementation |
-| [`skills/loi/scripts/pre-commit-loi.sh`](skills/loi/scripts/pre-commit-loi.sh) | Pre-commit hook — intercepts index commits and triggers implementation |
-| [`skills/loi/hooks/pre-push.sample`](skills/loi/hooks/pre-push.sample) | Pre-push hook source (installed via `setup_hook.py`) |
-| [`.github/workflows/loi-committee.yml`](.github/workflows/loi-committee.yml) | CI — runs Architect + Security committee on every PR |
-| [`skills/loi/tests/`](skills/loi/tests/) | Test suite (pytest) |
+| [`main.go`](main.go) + [`cmd/`](cmd/) | CLI entry point and cobra subcommands |
+| [`internal/`](internal/) | Core packages: git, index parsing, claims, codetect, notify, fswatch, testrun |
+| [`MANIFESTO.md`](MANIFESTO.md) | Architecture rationale and the 10-level autonomy taxonomy |
 
 ---
 
 ## Level 7: watcher daemon
 
-The watcher watches `docs/index/` and fires on changes. Default mode is `notify` — validates, creates a draft PR, sends a notification. Use `--mode auto` with a `--policy` to opt into code generation.
+`loi watch` monitors `docs/index/` and fires on changes. Default mode is `notify` — validates, creates a draft PR, sends a notification. Use `--mode auto` with a `--policy` to opt into code generation.
+
+It also watches source files in the other direction (**Code-to-Intent**): when a `.go`, `.py`, `.ts`, or other source file changes, it finds the covering LOI room and proposes an index update via draft PR.
 
 ```bash
-# Notify only
-uv run --with watchdog watcher.py --notify-backend slack --notify-url https://hooks.slack.com/...
+# Notify only — Slack
+loi watch --notify-backend slack --notify-url https://hooks.slack.com/...
 
-# Auto: branch + PR, no code generation
-uv run --with watchdog watcher.py --mode auto --policy draft-only --notify-backend webhook --notify-url https://...
+# Auto: branch + PR, no code generation (safest auto option)
+loi watch --mode auto --policy draft-only --notify-backend webhook --notify-url https://...
 
 # Auto: implement within scopes, block on security-sensitive rooms
-uv run --with watchdog watcher.py --mode auto --policy scoped-code-safe \
+loi watch --mode auto --policy scoped-code-safe \
   --allowed-scopes "docs/**,tests/**" --notify-backend slack --notify-url https://...
+
+# Auto: full autonomy with webhook notification
+loi watch --mode auto --policy full-auto --notify-backend webhook --notify-url https://...
 ```
 
-See [`SKILL.md`](skills/loi/SKILL.md) for the full policy tier reference and all commands.
+| Policy | Behaviour |
+|--------|-----------|
+| `notify-only` | Validate + notify; worker never invoked |
+| `draft-only` | Branch + draft PR created; worker not invoked |
+| `docs-safe` | Implement only if all source files are under `docs/` |
+| `tests-safe` | Implement only if all source files are test files |
+| `scoped-code-safe` | Implement only within `--allowed-scopes` globs |
+| `full-auto` | No scope restriction |
+
+After auto-mode implementation, the watcher runs the test suite automatically (`pytest`, `go test`, or `npm test` — auto-detected). On failure it marks affected rooms `architectural_health: conflicted`, commits to a `loi/conflict-<timestamp>` branch, and notifies.
+
+See [`skills/loi-generate/SKILL.md`](skills/loi-generate/SKILL.md) for the full command reference.
 
 ---
 
