@@ -107,10 +107,10 @@ Use these as starting points — rename to match the codebase's actual language:
 - **Never create a building with only one room.** If a subdomain folder would contain only `_root.md` + one `.md` room file, the folder adds navigation overhead with no benefit. Instead, promote the room to a flat top-level file (e.g., `docs/index/config.md` rather than `docs/index/config/_root.md` + `docs/index/config/general.md`). A building needs at least 2 room files to justify its own folder.
 - **Shared utilities go in `shared/` or `infra/`, not in their primary consumer's room.** If `readlimit/` is used by mirrors, scanning, and API handlers, it belongs in `infra/` or `shared/` — not in `proxy/`. Place a file where its *responsibility* lives, not where its biggest caller lives.
 
-**4.5. Scaffold mechanical fields** — If the project has a codetect index (`.codetect/symbols.db`), run the scaffold script to pre-populate SYMBOLS, TYPE, and DEPENDS from AST data:
+**4.5. Scaffold mechanical fields** — If the project has a codetect index (`.codetect/symbols.db`), run the scaffold command to pre-populate SYMBOLS, TYPE, and DEPENDS from AST data:
 
 ```bash
-python3 <skill-base-dir>/../loi/scripts/generate_loi.py <project-root> --scaffold
+loi generate --scaffold
 ```
 
 This produces room files with `<!-- LLM-FILL -->` markers where the LLM must fill in DOES, PATTERNS, USE WHEN, EMITS, and CONSUMERS. If no codetect index exists, skip this step and generate entries manually in step 5.
@@ -270,7 +270,7 @@ Regenerate only stale domains (files changed since last index).
    ```
    Mark rooms where source files changed.
 
-2. **Regenerate only stale rooms** — If the project has a codetect index, run `generate_loi.py <project-root> --scaffold --room <room>` for each stale room to refresh SYMBOLS/DEPENDS from AST. Then invoke `/rlm` (via the Skill tool with `skill: "rlm"`) with only the stale rooms as map inputs to fill semantic fields; if `/rlm` is unavailable, spawn agents manually per room.
+2. **Regenerate only stale rooms** — If the project has a codetect index, run `loi generate --scaffold --room <room>` for each stale room to refresh SYMBOLS/DEPENDS from AST. Then invoke `/rlm` (via the Skill tool with `skill: "rlm"`) with only the stale rooms as map inputs to fill semantic fields; if `/rlm` is unavailable, spawn agents manually per room.
 
 3. **Merge results** — Update only affected domain files; leave others unchanged.
 
@@ -373,36 +373,34 @@ The PR requires human approval before merge. The AI never merges its own work.
 
 The `/loi implement` command is the IDE-native way (Option A). Two additional automation hooks are provided:
 
-- **Option B — Pre-Commit Hook**: `skills/loi/scripts/pre-commit-loi.sh` intercepts commits that modify `docs/index/` and triggers implementation before the commit completes.
-- **Option C — Background Daemon**: `skills/loi/scripts/watcher.py` monitors `docs/index/` for changes with three modes:
-  - `--mode notify` (default): validate → create draft PR → Slack notification. No code changes until you approve.
-  - `--mode auto`: validate → implement via AI → commit → PR. Full autonomy, opt-in.
+- **Option B — Pre-Commit Hook**: install with `loi setup-hook --mode pre-commit-stale`. Warns when staged source files are covered by a LOI room that wasn't also updated in the commit.
+- **Option C — Background Daemon**: `loi watch` monitors `docs/index/` for changes with three modes:
+  - `--mode notify` (default): validate → create draft PR → notification. No code changes until you approve.
+  - `--mode auto`: validate → implement via AI → run tests → commit → PR. Full autonomy, opt-in.
   - `--mode dry-run`: log only.
 
-  Notifications use the pluggable `--notify-backend` flag. Legacy `--slack-webhook` / `--slack-channel` flags still work (deprecated). Changes within the batch window (`--debounce`, default 5s) are grouped into a single PR. In `auto` mode, a `--policy` flag gates what the worker is allowed to implement.
-
   ```bash
-  # Notify mode — Slack webhook (preferred)
-  uv run --with watchdog watcher.py --notify-backend slack --notify-url https://hooks.slack.com/services/...
+  # Notify mode — Slack webhook
+  loi watch --notify-backend slack --notify-url https://hooks.slack.com/services/...
 
   # Notify mode — write events to a JSONL file
-  uv run --with watchdog watcher.py --notify-backend file --notify-file loi-events.jsonl
+  loi watch --notify-backend file --notify-file loi-events.jsonl
 
   # Notify mode — POST to a custom HTTP endpoint
-  uv run --with watchdog watcher.py --notify-backend webhook --notify-url https://example.com/loi-hook
+  loi watch --notify-backend webhook --notify-url https://example.com/loi-hook
 
   # Auto mode — create PR but never invoke implement worker (safest auto option)
-  uv run --with watchdog watcher.py --mode auto --policy draft-only --notify-backend slack --notify-url https://...
+  loi watch --mode auto --policy draft-only --notify-backend slack --notify-url https://...
 
   # Auto mode — implement only test files; block on sensitive rooms
-  uv run --with watchdog watcher.py --mode auto --policy tests-safe --notify-backend webhook --notify-url https://...
+  loi watch --mode auto --policy tests-safe --notify-backend webhook --notify-url https://...
 
   # Auto mode — implement within explicit scopes only
-  uv run --with watchdog watcher.py --mode auto --policy scoped-code-safe \
+  loi watch --mode auto --policy scoped-code-safe \
     --allowed-scopes "docs/**,tests/**" --notify-backend slack --notify-url https://...
 
   # Auto mode — full autonomy, disable governance blocking
-  uv run --with watchdog watcher.py --mode auto --policy full-auto \
+  loi watch --mode auto --policy full-auto \
     --block-governance-security none --notify-backend slack --notify-url https://...
   ```
 
@@ -431,13 +429,11 @@ Verify the structural integrity and coverage of a generated LOI index.
 
 **Process:**
 
-Run the validation script using the skill's base directory (provided at the top of the skill invocation as `Base directory for this skill:`):
-
 ```bash
-python3 <skill-base-dir>/../loi/scripts/validate_loi.py <project-root>
+loi validate
 ```
 
-The script checks:
+Checks:
 - `docs/index/_root.md` exists and has TASK → LOAD table
 - All subdomain `_root.md` routers exist and reference valid room files
 - All room `.md` files have YAML frontmatter with required fields (`room`, `see_also`)
@@ -445,25 +441,24 @@ The script checks:
 - Every source directory with code files is covered by at least one room
 - No room exceeds ~150 entries
 
-**Changed-rooms mode** — validate only rooms touched in the current git diff (useful during development):
+**Changed-rooms mode** — validate only rooms touched in the current git diff:
 
 ```bash
-python3 <skill-base-dir>/../loi/scripts/validate_loi.py <project-root> --changed-rooms
+loi validate --changed-rooms
 ```
 
-**CI mode** — treat warnings as errors (exits 1 if any warnings exist):
+**CI mode** — treat warnings as errors:
 
 ```bash
-python3 <skill-base-dir>/../loi/scripts/validate_loi.py <project-root> --ci
+loi validate --ci
 ```
 
-Both flags can be combined. The pre-push hook runs `--changed-rooms` automatically before every push.
-
-**Install the pre-push hook** with `setup_hook.py`:
+**Install git hooks:**
 
 ```bash
-python3 <skill-base-dir>/../loi/scripts/setup_hook.py <project-root>
-python3 <skill-base-dir>/../loi/scripts/setup_hook.py <project-root> --force   # overwrite existing
+loi setup-hook                        # install all hooks (pre-push + pre-commit-stale)
+loi setup-hook --mode pre-push        # pre-push only
+loi setup-hook --force                # overwrite existing hooks
 ```
 
 Fix any reported errors before considering the index complete.
@@ -475,8 +470,8 @@ Fix any reported errors before considering the index complete.
 Verify that every PATTERN entry in `_root.md` files is semantically grounded in the room it points to.
 
 ```bash
-python3 <skill-base-dir>/../loi/scripts/validate_patterns.py <project-root>
-python3 <skill-base-dir>/../loi/scripts/validate_patterns.py <project-root> --level 2
+loi validate-patterns
+loi validate-patterns --level 2
 ```
 
 **Levels:**
@@ -495,8 +490,8 @@ python3 <skill-base-dir>/../loi/scripts/validate_patterns.py <project-root> --le
 Compute row-level deltas for TASK, PATTERN, and GOVERNANCE tables between two git revisions.
 
 ```bash
-python3 <skill-base-dir>/../loi/scripts/diff_tables.py <project-root> docs/index/auth/_root.md
-python3 <skill-base-dir>/../loi/scripts/diff_tables.py <project-root> docs/index/_root.md --from HEAD~3 --to HEAD
+loi diff-tables docs/index/auth/_root.md
+loi diff-tables docs/index/_root.md --from HEAD~3 --to HEAD
 ```
 
 The watcher daemon calls this automatically and attaches the table diff to Slack/webhook notifications when a `_root.md` file changes.
@@ -508,13 +503,13 @@ The watcher daemon calls this automatically and attaches the table diff to Slack
 Aggregate GOVERNANCE WATCHLIST entries from all `_root.md` files, sorted by combined severity (security + health).
 
 ```bash
-python3 <skill-base-dir>/../loi/scripts/governance.py <project-root>
-python3 <skill-base-dir>/../loi/scripts/governance.py <project-root> --security sensitive
-python3 <skill-base-dir>/../loi/scripts/governance.py <project-root> --health warning
-python3 <skill-base-dir>/../loi/scripts/governance.py <project-root> --format json
+loi governance
+loi governance --security sensitive
+loi governance --health warning
+loi governance --format json
 
 # Multi-repo fleet view
-python3 <skill-base-dir>/../loi/scripts/governance.py /repos/alpha /repos/beta /repos/gamma
+loi governance /repos/alpha /repos/beta /repos/gamma
 ```
 
 Also surfaces rooms with non-normal `architectural_health` or `security_tier` frontmatter flags that aren't already covered by a watchlist entry.
@@ -527,23 +522,23 @@ Advisory-first coordination so multiple agents avoid editing the same room simul
 
 ```bash
 # Claim a room before editing it
-python3 <skill-base-dir>/../loi/scripts/runtime.py claim auth/ucan.md --intent edit --ttl 15m
+loi claim auth/ucan.md --intent edit --ttl 15m
 
 # Extend your claim while working
-python3 <skill-base-dir>/../loi/scripts/runtime.py heartbeat auth/ucan.md
+loi heartbeat auth/ucan.md
 
 # Release when done
-python3 <skill-base-dir>/../loi/scripts/runtime.py release auth/ucan.md
+loi release auth/ucan.md
 
 # Check who holds a claim
-python3 <skill-base-dir>/../loi/scripts/runtime.py status auth/ucan.md --include-freshness
+loi status auth/ucan.md --include-freshness
 
 # Record a handoff summary
-python3 <skill-base-dir>/../loi/scripts/runtime.py summary auth/ucan.md "Working on TTL path in MintToken"
+loi summary auth/ucan.md "Working on TTL path in MintToken"
 
 # List all active claims
-python3 <skill-base-dir>/../loi/scripts/runtime.py claims
-python3 <skill-base-dir>/../loi/scripts/runtime.py claims --repo my-repo
+loi claims
+loi claims --repo my-repo
 ```
 
 **Intent options:** `read` | `edit` | `review` | `security-sweep`
@@ -558,15 +553,15 @@ Query and validate AI-generated improvement proposals stored under `docs/index/p
 
 ```bash
 # List all proposals
-python3 <skill-base-dir>/../loi/scripts/proposals.py <project-root>
+loi proposals
 
 # Filter by room, grader version, or failure reason
-python3 <skill-base-dir>/../loi/scripts/proposals.py <project-root> --target-room auth/ucan.md
-python3 <skill-base-dir>/../loi/scripts/proposals.py <project-root> --grader-version v2.3
-python3 <skill-base-dir>/../loi/scripts/proposals.py <project-root> --failure-reason REFUSAL_CONTEXT
+loi proposals --target-room auth/ucan.md
+loi proposals --grader-version v2.3
+loi proposals --failure-reason REFUSAL_CONTEXT
 
 # Validate all proposals for required metadata fields
-python3 <skill-base-dir>/../loi/scripts/proposals.py <project-root> --validate
+loi proposals --validate
 ```
 
 Each proposal file must contain a `proposal_metadata:` block. See `reference/FORMAT_REFERENCE.md` → Schema Extensions for the full field reference.
